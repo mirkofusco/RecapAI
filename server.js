@@ -69,8 +69,8 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Recap AI pronto su http://${HOST}:${PORT}`);
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server attivo sulla porta ${PORT}`);
 });
 
 async function handleRecap(req, res) {
