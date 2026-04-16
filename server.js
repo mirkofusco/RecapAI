@@ -8,7 +8,7 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypt
 loadEnv();
 
 const PORT = Number(process.env.PORT || 3000);
-const HOST = process.env.HOST || "127.0.0.0";
+const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_DIR = join(process.cwd(), "public");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "recap-admin";
