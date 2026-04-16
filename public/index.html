@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Recap AI</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section id="clientLoginView" class="login-view">
+        <p class="eyebrow">Recap AI</p>
+        <h1>Accedi alla tua area.</h1>
+        <form id="clientLoginForm" class="login-box">
+          <label class="field">
+            Email
+            <input id="clientEmail" type="email" autocomplete="username" required />
+          </label>
+          <label class="field stacked-field">
+            Password
+            <input id="clientPassword" type="password" autocomplete="current-password" required />
+          </label>
+          <button type="submit">Entra</button>
+          <p id="loginStatus" class="status">Inserisci le credenziali ricevute dall'amministratore.</p>
+        </form>
+        <p class="admin-link">
+          <a href="/admin.html">Pannello admin</a>
+        </p>
+      </section>
+
+      <section id="appView" class="hidden">
+        <div class="admin-topbar">
+          <section class="intro">
+            <p class="eyebrow">Recap AI</p>
+            <h1>Da visita a riepilogo, senza perdere i dettagli.</h1>
+            <p id="clientBadge" class="lead">Area cliente</p>
+          </section>
+          <div class="topbar-actions">
+            <button id="clientLogoutBtn" type="button" class="secondary">Esci</button>
+          </div>
+        </div>
+
+        <section class="client-layout">
+          <aside class="client-sidebar" aria-label="Storico e piano">
+            <div class="account-panel">
+              <strong id="clientNameLabel">Cliente</strong>
+              <span id="clientUsageLabel">Visite mese: 0/0</span>
+            </div>
+
+            <details class="usage-details">
+              <summary>Piano e visite</summary>
+              <div id="clientUsageDetails" class="usage-mini-grid"></div>
+              <div id="clientRecentVisits" class="recent-visits"></div>
+            </details>
+
+            <section class="saved-visits-panel" aria-label="Ultime visite salvate">
+              <div class="saved-visits-head">
+                <h2>Ultime 10 visite</h2>
+                <span>Solo testo, audio non salvato</span>
+              </div>
+              <div id="savedVisitsList" class="saved-visits-list"></div>
+            </section>
+          </aside>
+
+          <section class="workspace" aria-label="Nuova visita">
+            <div class="controls">
+            <label class="field">
+              Nome paziente
+              <input id="patientName" type="text" placeholder="Es. Maria Rossi (opzionale)" autocomplete="off" />
+              <span class="field-note">Se lo lasci vuoto provo a riconoscerlo dalla voce.</span>
+            </label>
+
+            <label class="field stacked-field">
+              Tipo visita
+              <select id="visitType">
+                <option value="visita nutrizionale">Visita nutrizionale</option>
+                <option value="consulenza professionale">Consulenza professionale</option>
+                <option value="colloquio di follow-up">Colloquio di follow-up</option>
+              </select>
+            </label>
+
+            <label class="field context-field">
+              Contesto per l'AI
+              <textarea
+                id="visitContext"
+                class="context-input"
+                placeholder="Esempio: prima visita, obiettivo dimagrimento, paziente sportivo, attenzione a fame serale o aderenza al piano."
+              ></textarea>
+            </label>
+
+            <label class="consent">
+              <input id="consent" type="checkbox" />
+              Ho informato il paziente e ho ricevuto consenso alla registrazione.
+            </label>
+
+            <div class="button-row">
+              <button id="startBtn" type="button">Avvia registrazione</button>
+              <button id="stopBtn" type="button" disabled>Termina e riassumi</button>
+              <button id="resetBtn" type="button" class="secondary">Nuova visita</button>
+            </div>
+
+            <div id="recordingPanel" class="recording-panel hidden" aria-live="polite">
+              <div class="recording-head">
+                <span class="recording-dot"></span>
+                <strong id="recordingTitle">Registrazione attiva</strong>
+              </div>
+              <div id="voiceMeter" class="voice-meter" aria-label="Livello voce"></div>
+              <p id="recordingHint">Sto ascoltando la voce.</p>
+            </div>
+
+            <div id="processingPanel" class="processing-panel hidden" aria-live="polite">
+              <div class="processing-spinner"></div>
+              <div>
+                <strong id="processingTitle">Sto trascrivendo la visita...</strong>
+                <p id="processingHint">Tra poco preparo il riassunto per te.</p>
+              </div>
+            </div>
+
+            <p id="status" class="status">Pronto per iniziare.</p>
+            <p id="timer" class="timer">00:00</p>
+            </div>
+
+            <div class="results">
+            <article class="summary-card">
+              <div class="panel-heading">
+                <h2>Riassunto</h2>
+                <div class="panel-actions">
+                  <button id="copySummaryBtn" type="button" class="small" disabled>Copia</button>
+                  <button id="printSummaryBtn" type="button" class="small" disabled>Stampa</button>
+                  <button id="pdfSummaryBtn" type="button" class="small" disabled>Scarica PDF</button>
+                </div>
+              </div>
+              <textarea id="summary" readonly placeholder="Il riepilogo apparira' qui."></textarea>
+            </article>
+
+            <article class="transcript-card">
+              <div class="panel-heading">
+                <h2>Trascrizione</h2>
+                <div class="panel-actions">
+                  <button id="copyTranscriptBtn" type="button" class="small" disabled>Copia</button>
+                  <button id="printTranscriptBtn" type="button" class="small" disabled>Stampa</button>
+                  <button id="pdfTranscriptBtn" type="button" class="small" disabled>Scarica PDF</button>
+                </div>
+              </div>
+              <textarea id="transcript" readonly placeholder="La trascrizione apparira' qui."></textarea>
+            </article>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

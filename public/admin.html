@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Recap AI Admin</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="admin-shell">
+      <section id="loginView" class="login-view">
+        <p class="eyebrow">Recap AI Admin</p>
+        <h1>Accedi al pannello.</h1>
+        <form id="loginForm" class="login-box">
+          <label class="field">
+            Password admin
+            <input id="adminPassword" type="password" autocomplete="current-password" autofocus />
+          </label>
+          <button type="submit">Entra</button>
+          <p id="loginStatus" class="status">Usa la password configurata nel file CONFIGURA_CHIAVE.txt.</p>
+        </form>
+      </section>
+
+      <section id="dashboardView" class="hidden">
+        <div class="admin-topbar">
+          <div>
+            <p class="eyebrow">Recap AI Admin</p>
+            <h1>Clienti.</h1>
+          </div>
+          <div class="topbar-actions">
+            <a class="button-link secondary" href="/">Apri app cliente</a>
+            <button id="logoutBtn" type="button" class="secondary">Esci</button>
+          </div>
+        </div>
+
+        <div class="admin-stats">
+          <article>
+            <strong id="totalClients">0</strong>
+            <span>Clienti</span>
+          </article>
+          <article>
+            <strong id="activeClients">0</strong>
+            <span>Attivi</span>
+          </article>
+          <article>
+            <strong id="monthlyVisits">0</strong>
+            <span>Visite mese</span>
+          </article>
+          <article>
+            <strong id="monthlyTokens">0</strong>
+            <span>Token mese</span>
+          </article>
+          <article>
+            <strong id="monthlyCost">$0.00</strong>
+            <span>Costo mese stimato</span>
+          </article>
+          <article>
+            <strong id="currentMonthLabel">-</strong>
+            <span>Mese corrente</span>
+          </article>
+        </div>
+
+        <div class="admin-toolbar">
+          <button id="newClientBtn" type="button">Nuovo cliente</button>
+          <button id="refreshBtn" type="button" class="secondary">Aggiorna</button>
+          <p id="adminStatus" class="status">Dashboard pronta.</p>
+        </div>
+
+        <section class="admin-layout">
+          <aside class="admin-sidebar">
+            <h2>Utenze</h2>
+            <div id="clientList" class="client-sidebar-list" aria-label="Utenze clienti"></div>
+          </aside>
+
+          <section id="detailPanel" class="detail-panel">
+            <div class="empty-state">
+              <h2>Seleziona un cliente</h2>
+              <p>Clicca un'utenza a sinistra per vedere dettagli, piano, stato e password.</p>
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <template id="detailTemplate">
+      <form id="clientDetailForm" class="detail-form">
+        <div class="detail-header">
+          <div>
+            <p class="eyebrow">Scheda cliente</p>
+            <h2 id="detailTitle">Nuovo cliente</h2>
+          </div>
+          <span id="detailStatusPill" class="status-pill">Nuovo</span>
+        </div>
+
+        <div class="form-grid">
+          <label class="field">
+            Nome cliente
+            <input id="detailName" type="text" required />
+          </label>
+
+          <label class="field">
+            Email login
+            <input id="detailEmail" type="email" required />
+          </label>
+
+          <label class="field">
+            Password cliente
+            <input id="detailPassword" type="text" placeholder="Scrivila tu oppure lasciala vuota" />
+          </label>
+
+          <label class="field">
+            Piano
+            <select id="detailPlan">
+              <option value="Starter">Starter - 20 visite</option>
+              <option value="Pro">Pro - 120 visite</option>
+              <option value="Studio">Studio - 300 visite</option>
+            </select>
+          </label>
+
+          <label class="field">
+            Limite visite mensile
+            <input id="detailLimit" type="number" min="1" />
+          </label>
+
+          <label class="field">
+            Stato
+            <select id="detailStatus">
+              <option value="active">Attivo</option>
+              <option value="suspended">Sospeso</option>
+            </select>
+          </label>
+        </div>
+
+        <div id="usagePanel" class="usage-box"></div>
+
+        <div class="detail-actions">
+          <button id="saveClientBtn" type="submit">Salva cliente</button>
+          <button id="copyCredentialsBtn" type="button" class="secondary">Copia credenziali</button>
+          <button id="setPasswordBtn" type="button" class="secondary">Aggiorna password</button>
+          <button id="resetMonthBtn" type="button" class="secondary">Reset mese</button>
+          <button id="deleteClientBtn" type="button" class="danger-button">Elimina cliente</button>
+        </div>
+      </form>
+    </template>
+
+    <script src="/admin.js" type="module"></script>
+  </body>
+</html>
