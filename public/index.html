@@ -99,6 +99,18 @@
               <button id="resetBtn" type="button" class="secondary">Nuova visita</button>
             </div>
 
+            <div id="draftPanel" class="draft-panel hidden" aria-live="polite">
+              <div>
+                <strong>Bozza visita recuperata</strong>
+                <p id="draftInfo">C'e' una trascrizione salvata automaticamente.</p>
+              </div>
+              <div class="draft-actions">
+                <button id="resumeDraftBtn" type="button" class="small">Apri bozza</button>
+                <button id="finishDraftBtn" type="button" class="small">Riassumi bozza</button>
+                <button id="discardDraftBtn" type="button" class="small secondary">Elimina</button>
+              </div>
+            </div>
+
             <div id="recordingPanel" class="recording-panel hidden" aria-live="polite">
               <div class="recording-head">
                 <span class="recording-dot"></span>

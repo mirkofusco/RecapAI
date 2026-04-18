@@ -19,7 +19,7 @@ const clientSessions = new Map();
 const MAX_RECENT_VISITS = 12;
 const MAX_SAVED_VISITS = 10;
 const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES || 80 * 1024 * 1024);
-const MAX_JSON_BYTES = Number(process.env.MAX_JSON_BYTES || 512 * 1024);
+const MAX_JSON_BYTES = Number(process.env.MAX_JSON_BYTES || 2 * 1024 * 1024);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const rateBuckets = new Map();
 
@@ -62,6 +62,16 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/api/recap-text") {
       await handleRecapText(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/draft/start") {
+      await handleDraftStart(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/draft/discard") {
+      await handleDraftDiscard(req, res);
       return;
     }
 
@@ -268,6 +278,7 @@ async function handleTranscribeChunk(req, res) {
   const form = await request.formData();
   const audio = form.get("audio");
   const chunkIndex = Number(form.get("chunkIndex") || 0);
+  const draftId = String(form.get("draftId") || "");
 
   if (!audio || typeof audio === "string") {
     sendJson(res, 400, { error: "Audio non ricevuto." });
@@ -283,6 +294,10 @@ async function handleTranscribeChunk(req, res) {
 
   try {
     const text = await transcribeAudio(audio, requestId);
+    if (draftId && client.activeDraft?.id === draftId) {
+      appendDraftTranscript(client.activeDraft, chunkIndex, text);
+      await saveStore(store);
+    }
     logEvent("chunk_transcription_completed", {
       requestId,
       clientId: client.id,
@@ -310,16 +325,12 @@ async function handleRecapText(req, res) {
   }
 
   const body = await readJsonBody(req);
-  const transcript = String(body.transcript || "").trim();
-  const patientName = String(body.patientName || "");
-  const visitType = String(body.visitType || "visita nutrizionale");
-  const visitContext = String(body.visitContext || "");
-  const durationSeconds = Number(body.durationSeconds || 0);
-
-  if (!transcript) {
-    sendJson(res, 400, { error: "Trascrizione vuota. Riprova la registrazione." });
-    return;
-  }
+  const draftId = String(body.draftId || "");
+  let transcript = String(body.transcript || "").trim();
+  let patientName = String(body.patientName || "");
+  let visitType = String(body.visitType || "visita nutrizionale");
+  let visitContext = String(body.visitContext || "");
+  let durationSeconds = Number(body.durationSeconds || 0);
 
   const store = await loadStore();
   const client = getClientFromSession(req, store);
@@ -339,6 +350,19 @@ async function handleRecapText(req, res) {
   if (client.usedThisMonth >= client.monthlyLimit) {
     logEvent("recap_text_forbidden", { requestId, clientId: client.id, reason: "monthly_limit" });
     sendJson(res, 403, { error: "Limite visite mensile raggiunto. Contatta l'amministratore." });
+    return;
+  }
+
+  if (draftId && client.activeDraft?.id === draftId) {
+    transcript = String(client.activeDraft.transcript || transcript).trim();
+    patientName = String(client.activeDraft.patientName || patientName);
+    visitType = String(client.activeDraft.visitType || visitType);
+    visitContext = String(client.activeDraft.visitContext || visitContext);
+    durationSeconds = Number(durationSeconds || client.activeDraft.durationSeconds || 0);
+  }
+
+  if (!transcript) {
+    sendJson(res, 400, { error: "Trascrizione vuota. Riprova la registrazione." });
     return;
   }
 
@@ -373,6 +397,9 @@ async function handleRecapText(req, res) {
     summary,
     stats: visitStats
   });
+  if (draftId && client.activeDraft?.id === draftId) {
+    delete client.activeDraft;
+  }
   client.lastUsedAt = new Date().toISOString();
   await saveStore(store);
   logEvent("recap_text_completed", {
@@ -394,6 +421,64 @@ async function handleRecapText(req, res) {
       savedVisits: client.savedVisits || []
     }
   });
+}
+
+async function handleDraftStart(req, res) {
+  const requestId = createLogId();
+  const body = await readJsonBody(req);
+  const store = await loadStore();
+  const client = getClientFromSession(req, store);
+  if (!client) {
+    logEvent("draft_start_unauthorized", { requestId });
+    sendJson(res, 401, { error: "Sessione scaduta. Effettua di nuovo il login." });
+    return;
+  }
+
+  refreshClientMonth(client);
+  if (client.status !== "active") {
+    sendJson(res, 403, { error: "Cliente sospeso. Contatta l'amministratore." });
+    return;
+  }
+
+  if (client.usedThisMonth >= client.monthlyLimit) {
+    sendJson(res, 403, { error: "Limite visite mensile raggiunto. Contatta l'amministratore." });
+    return;
+  }
+
+  client.activeDraft = {
+    id: randomUUID(),
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    patientName: String(body.patientName || ""),
+    visitType: String(body.visitType || "visita nutrizionale"),
+    visitContext: String(body.visitContext || ""),
+    durationSeconds: 0,
+    transcriptParts: [],
+    transcript: ""
+  };
+  await saveStore(store);
+  logEvent("draft_started", { requestId, clientId: client.id, draftId: client.activeDraft.id });
+  sendJson(res, 201, { draft: publicDraft(client.activeDraft) });
+}
+
+async function handleDraftDiscard(req, res) {
+  const requestId = createLogId();
+  const body = await readJsonBody(req);
+  const draftId = String(body.draftId || "");
+  const store = await loadStore();
+  const client = getClientFromSession(req, store);
+  if (!client) {
+    logEvent("draft_discard_unauthorized", { requestId });
+    sendJson(res, 401, { error: "Sessione scaduta. Effettua di nuovo il login." });
+    return;
+  }
+
+  if (!draftId || client.activeDraft?.id === draftId) {
+    delete client.activeDraft;
+    await saveStore(store);
+  }
+  logEvent("draft_discarded", { requestId, clientId: client.id, draftId });
+  sendJson(res, 200, { discarded: true });
 }
 
 async function handleAdmin(req, res) {
@@ -910,7 +995,21 @@ function publicClient(client) {
     lastUsedAt: client.lastUsedAt,
     usageStats: clientUsageStats(client),
     recentVisits: client.recentVisits || [],
-    savedVisits: client.savedVisits || []
+    savedVisits: client.savedVisits || [],
+    activeDraft: client.activeDraft ? publicDraft(client.activeDraft) : null
+  };
+}
+
+function publicDraft(draft) {
+  return {
+    id: draft.id,
+    startedAt: draft.startedAt,
+    updatedAt: draft.updatedAt,
+    patientName: draft.patientName || "",
+    visitType: draft.visitType || "visita nutrizionale",
+    visitContext: draft.visitContext || "",
+    durationSeconds: Number(draft.durationSeconds || 0),
+    transcript: draft.transcript || ""
   };
 }
 
@@ -962,6 +1061,13 @@ function saveClientVisit(client, visit) {
     },
     ...(client.savedVisits || [])
   ].slice(0, MAX_SAVED_VISITS);
+}
+
+function appendDraftTranscript(draft, chunkIndex, text) {
+  draft.transcriptParts = Array.isArray(draft.transcriptParts) ? draft.transcriptParts : [];
+  draft.transcriptParts[chunkIndex] = String(text || "").trim();
+  draft.transcript = draft.transcriptParts.filter(Boolean).join("\n\n");
+  draft.updatedAt = new Date().toISOString();
 }
 
 function createVisitTitle(patientName, visitType, isoDate) {

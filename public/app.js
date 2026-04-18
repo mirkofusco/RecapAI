@@ -14,6 +14,11 @@ const savedVisitsList = document.querySelector("#savedVisitsList");
 const startBtn = document.querySelector("#startBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const resetBtn = document.querySelector("#resetBtn");
+const draftPanel = document.querySelector("#draftPanel");
+const draftInfo = document.querySelector("#draftInfo");
+const resumeDraftBtn = document.querySelector("#resumeDraftBtn");
+const finishDraftBtn = document.querySelector("#finishDraftBtn");
+const discardDraftBtn = document.querySelector("#discardDraftBtn");
 const copySummaryBtn = document.querySelector("#copySummaryBtn");
 const printSummaryBtn = document.querySelector("#printSummaryBtn");
 const pdfSummaryBtn = document.querySelector("#pdfSummaryBtn");
@@ -34,7 +39,7 @@ const processingTitle = document.querySelector("#processingTitle");
 const processingHint = document.querySelector("#processingHint");
 const summary = document.querySelector("#summary");
 const transcript = document.querySelector("#transcript");
-const LIVE_CHUNK_MS = 20000;
+const LIVE_CHUNK_MS = 10000;
 
 let recorder;
 let chunks = [];
@@ -53,12 +58,16 @@ let shouldProcessRecording = false;
 let clientToken = localStorage.getItem("recapClientToken") || "";
 let currentClient = null;
 let currentSummaryTitle = "Riassunto visita";
+let currentDraft = null;
 
 clientLoginForm.addEventListener("submit", loginClient);
 clientLogoutBtn.addEventListener("click", logoutClient);
 startBtn.addEventListener("click", startRecording);
 stopBtn.addEventListener("click", stopRecording);
 resetBtn.addEventListener("click", resetVisit);
+resumeDraftBtn.addEventListener("click", resumeDraft);
+finishDraftBtn.addEventListener("click", finishDraft);
+discardDraftBtn.addEventListener("click", discardDraft);
 copySummaryBtn.addEventListener("click", () => copyText(summary.value, "Riassunto copiato."));
 printSummaryBtn.addEventListener("click", () => printDocument("Riassunto", summary.value));
 pdfSummaryBtn.addEventListener("click", () => downloadPdf("Riassunto", summary.value));
@@ -132,6 +141,7 @@ function updateClientLabels() {
   clientUsageLabel.textContent = `Visite mese: ${currentClient.usedThisMonth}/${currentClient.monthlyLimit}`;
   renderUsageDetails();
   renderSavedVisits();
+  renderDraftPanel();
 }
 
 async function startRecording() {
@@ -145,7 +155,14 @@ async function startRecording() {
     return;
   }
 
+  if (currentClient?.activeDraft?.transcript) {
+    const replaceDraft = window.confirm("C'e' una bozza salvata. Vuoi iniziare una nuova visita ed eliminare la bozza precedente?");
+    if (!replaceDraft) return;
+    await discardDraft(false);
+  }
+
   try {
+    currentDraft = await startDraft();
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     chunks = [];
     recordingSessionId += 1;
@@ -214,7 +231,7 @@ async function processAudio() {
 
     const liveTranscript = liveTranscriptParts.filter(Boolean).join("\n\n").trim();
     if (!liveTranscriptionFailed && liveTranscript) {
-      await summarizeLiveTranscript(liveTranscript);
+      await summarizeLiveTranscript(liveTranscript, currentDraft?.id || "");
       return;
     }
 
@@ -250,6 +267,7 @@ async function uploadLiveChunk(blob, chunkIndex, sessionId) {
   const form = new FormData();
   form.append("audio", blob, fileName);
   form.append("chunkIndex", chunkIndex);
+  if (currentDraft?.id) form.append("draftId", currentDraft.id);
 
   const response = await fetch("/api/transcribe-chunk", {
     method: "POST",
@@ -267,11 +285,16 @@ async function uploadLiveChunk(blob, chunkIndex, sessionId) {
 
   liveTranscriptParts[chunkIndex] = text;
   transcript.value = liveTranscriptParts.filter(Boolean).join("\n\n");
+  if (currentClient?.activeDraft?.id === currentDraft?.id) {
+    currentClient.activeDraft.transcript = transcript.value;
+    currentClient.activeDraft.updatedAt = new Date().toISOString();
+    renderDraftPanel();
+  }
   setTranscriptActionsEnabled(true);
   setStatus(`Trascrizione live aggiornata: blocco ${chunkIndex + 1}.`);
 }
 
-async function summarizeLiveTranscript(liveTranscript) {
+async function summarizeLiveTranscript(liveTranscript, draftId = "") {
   transcript.value = liveTranscript;
   showProcessing("Sto preparando il riassunto per te...", "La trascrizione era gia' pronta: ora ordino i punti importanti.");
 
@@ -286,7 +309,8 @@ async function summarizeLiveTranscript(liveTranscript) {
       visitType: visitType.value,
       visitContext: visitContext.value,
       durationSeconds: Math.floor((Date.now() - startedAt) / 1000),
-      transcript: liveTranscript
+      transcript: liveTranscript,
+      draftId
     })
   });
 
@@ -296,6 +320,30 @@ async function summarizeLiveTranscript(liveTranscript) {
   }
 
   applyRecapPayload(payload);
+}
+
+async function startDraft() {
+  const response = await fetch("/api/draft/start", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-client-token": clientToken
+    },
+    body: JSON.stringify({
+      patientName: patientName.value,
+      visitType: visitType.value,
+      visitContext: visitContext.value
+    })
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "Bozza non creata.");
+  }
+
+  currentClient.activeDraft = payload.draft;
+  renderDraftPanel();
+  return payload.draft;
 }
 
 async function processFullAudio() {
@@ -340,6 +388,8 @@ function applyRecapPayload(payload) {
     ...(currentClient.recentVisits || [])
   ].slice(0, 12);
   currentClient.savedVisits = payload.usage.savedVisits || currentClient.savedVisits || [];
+  currentClient.activeDraft = null;
+  currentDraft = null;
   currentSummaryTitle = currentClient.savedVisits?.[0]?.title || buildLocalVisitTitle();
   updateClientLabels();
   setStatus(`Riassunto pronto. Visite usate: ${payload.usage.usedThisMonth}/${payload.usage.monthlyLimit}.`);
@@ -357,6 +407,8 @@ function resetVisit() {
   liveTranscriptParts = [];
   liveTranscriptionFailed = false;
   liveChunkIndex = 0;
+  if (currentDraft?.id) void discardDraft(false);
+  currentDraft = null;
   transcript.value = "";
   summary.value = "";
   setTranscriptActionsEnabled(false);
@@ -375,6 +427,70 @@ function resetVisit() {
   window.clearInterval(timer);
   timerText.textContent = "00:00";
   setStatus("Pronto per iniziare.");
+}
+
+function renderDraftPanel() {
+  const draft = currentClient?.activeDraft || null;
+  if (!draft?.transcript) {
+    draftPanel.classList.add("hidden");
+    return;
+  }
+
+  const updatedAt = draft.updatedAt ? new Date(draft.updatedAt).toLocaleString("it-IT") : "ora";
+  const words = draft.transcript.trim().split(/\s+/).filter(Boolean).length;
+  draftInfo.textContent = `${words} parole salvate. Ultimo salvataggio: ${updatedAt}.`;
+  draftPanel.classList.remove("hidden");
+}
+
+function resumeDraft() {
+  const draft = currentClient?.activeDraft;
+  if (!draft) return;
+  currentDraft = draft;
+  patientName.value = draft.patientName || "";
+  visitType.value = draft.visitType || visitType.value;
+  visitContext.value = draft.visitContext || "";
+  transcript.value = draft.transcript || "";
+  summary.value = "";
+  setTranscriptActionsEnabled(Boolean(transcript.value));
+  setSummaryActionsEnabled(false);
+  setStatus("Bozza recuperata. Puoi copiarla, salvarla o generare il riassunto.");
+}
+
+async function finishDraft() {
+  const draft = currentClient?.activeDraft;
+  if (!draft?.transcript) return;
+  try {
+    startBtn.disabled = true;
+    stopBtn.disabled = true;
+    showProcessing("Sto preparando il riassunto per te...", "Uso la bozza salvata sul server.");
+    await summarizeLiveTranscript(draft.transcript, draft.id);
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    startBtn.disabled = false;
+    hideProcessing();
+  }
+}
+
+async function discardDraft(showMessage = true) {
+  const draft = currentClient?.activeDraft;
+  if (!draft) return;
+
+  const response = await fetch("/api/draft/discard", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-client-token": clientToken
+    },
+    body: JSON.stringify({ draftId: draft.id })
+  });
+
+  if (response.ok) {
+    currentClient.activeDraft = null;
+    currentDraft = null;
+    renderDraftPanel();
+    if (showMessage) setStatus("Bozza eliminata.");
+  }
 }
 
 async function copyText(value, message) {

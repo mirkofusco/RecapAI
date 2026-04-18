@@ -175,7 +175,8 @@ select {
 }
 
 .recording-panel,
-.processing-panel {
+.processing-panel,
+.draft-panel {
   margin-top: 14px;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -183,6 +184,27 @@ select {
     linear-gradient(135deg, rgba(8, 123, 131, 0.10), rgba(255, 255, 255, 0.82)),
     #ffffff;
   padding: 14px;
+}
+
+.draft-panel {
+  display: grid;
+  gap: 12px;
+  background:
+    linear-gradient(135deg, rgba(215, 184, 79, 0.14), rgba(255, 255, 255, 0.88)),
+    #ffffff;
+}
+
+.draft-panel p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.draft-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .recording-head {
@@ -955,6 +977,7 @@ button:focus-visible {
   .code-box,
   .plan-buttons,
   .client-actions,
+  .draft-actions,
   .detail-actions,
   .usage-mini-grid {
     grid-template-columns: 1fr;
