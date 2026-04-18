@@ -161,7 +161,7 @@ async function handleRecap(req, res) {
   let summaryResult;
   try {
     transcript = await transcribeAudio(audio, requestId);
-    summaryResult = await summarizeVisit(transcript, visitType, visitContext, requestId);
+    summaryResult = await summarizeVisit(transcript, visitType, visitContext, client.summaryPrompt, requestId);
   } catch (error) {
     logEvent("recap_failed", {
       requestId,
@@ -395,16 +395,19 @@ async function transcribeAudio(audioFile, requestId) {
   return payload.text || "";
 }
 
-async function summarizeVisit(transcript, visitType, visitContext, requestId) {
+async function summarizeVisit(transcript, visitType, visitContext, summaryPrompt, requestId) {
   logEvent("summary_started", {
     requestId,
     model: SUMMARY_MODEL,
     transcriptCharacters: transcript.length
   });
+  const clientPrompt = cleanOptionalText(summaryPrompt || defaultSummaryPrompt());
   const prompt = `
-Ruolo:
-Sei Recap AI, un assistente di documentazione per professionisti sanitari e consulenze.
-Devi trasformare la trascrizione di una ${visitType} in una scheda precisa, utile e modificabile.
+Prompt generale del cliente:
+${clientPrompt}
+
+Compito:
+Trasforma la trascrizione di una ${visitType} in una scheda precisa, utile e modificabile.
 
 Regole di precisione:
 - Non inventare diagnosi, misure, prescrizioni, allergie, patologie, farmaci o obiettivi.
@@ -503,6 +506,18 @@ ${transcript}
 function cleanOptionalText(value) {
   const text = String(value || "").trim();
   return text || "Non inserito.";
+}
+
+function defaultSummaryPrompt() {
+  return `Sei Recap AI, un assistente di documentazione per professionisti sanitari e consulenze.
+Il cliente principale e' una nutrizionista: crea un riepilogo preciso, professionale e utile per cartella/appunti.
+Evidenzia motivo della visita, obiettivi, dati citati, abitudini alimentari, stile di vita, criticita', indicazioni concordate, azioni per il paziente, azioni per il professionista, follow-up e note da verificare.
+Non inventare informazioni non presenti nella trascrizione. Se qualcosa non emerge, scrivi "Non emerso".`;
+}
+
+function normalizeSummaryPrompt(value) {
+  const text = String(value || "").trim();
+  return text || defaultSummaryPrompt();
 }
 
 function extractResponseText(payload) {
@@ -615,6 +630,7 @@ function createClient(body) {
     usedThisMonth: 0,
     month: currentMonth(),
     notes: String(body.notes || "").trim(),
+    summaryPrompt: normalizeSummaryPrompt(body.summaryPrompt),
     totalVisits: 0,
     totalSeconds: 0,
     monthlySeconds: 0,
@@ -644,6 +660,7 @@ function updateClient(client, body) {
     client.monthlyLimit = Math.max(1, Number(body.monthlyLimit));
   }
   if (body.notes !== undefined) client.notes = String(body.notes).trim();
+  if (body.summaryPrompt !== undefined) client.summaryPrompt = normalizeSummaryPrompt(body.summaryPrompt);
   refreshClientMonth(client);
 }
 
@@ -712,6 +729,7 @@ function adminClient(client) {
     ...publicClient(client),
     createdAt: client.createdAt,
     notes: client.notes || "",
+    summaryPrompt: client.summaryPrompt || defaultSummaryPrompt(),
     hasPassword: Boolean(client.passwordHash)
   };
 }

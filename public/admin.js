@@ -132,6 +132,7 @@ function openDetail(client) {
   const plan = detailPanel.querySelector("#detailPlan");
   const limit = detailPanel.querySelector("#detailLimit");
   const status = detailPanel.querySelector("#detailStatus");
+  const summaryPrompt = detailPanel.querySelector("#detailSummaryPrompt");
   const usagePanel = detailPanel.querySelector("#usagePanel");
   const copyCredentialsBtn = detailPanel.querySelector("#copyCredentialsBtn");
   const setPasswordBtn = detailPanel.querySelector("#setPasswordBtn");
@@ -148,6 +149,7 @@ function openDetail(client) {
   plan.value = client?.plan || "Starter";
   limit.value = client?.monthlyLimit || planLimits[plan.value];
   status.value = client?.status || "active";
+  summaryPrompt.value = client?.summaryPrompt || defaultSummaryPrompt();
   copyCredentialsBtn.disabled = isNew && !password.value;
   setPasswordBtn.disabled = isNew;
   resetMonthBtn.disabled = isNew;
@@ -167,7 +169,8 @@ function openDetail(client) {
       password: password.value,
       plan: plan.value,
       monthlyLimit: Number(limit.value),
-      status: status.value
+      status: status.value,
+      summaryPrompt: summaryPrompt.value
     };
 
     if (isNew) {
@@ -336,7 +339,14 @@ function setStatus(message) {
 }
 
 function formatCredentials(email, password) {
-  return `Recap AI\nEmail: ${email}\nPassword: ${password}\nLink: http://127.0.0.1:3000`;
+  return `Recap AI\nEmail: ${email}\nPassword: ${password}\nLink: https://recap-ai-frky.onrender.com`;
+}
+
+function defaultSummaryPrompt() {
+  return `Sei Recap AI, un assistente di documentazione per professionisti sanitari e consulenze.
+Il cliente principale e' una nutrizionista: crea un riepilogo preciso, professionale e utile per cartella/appunti.
+Evidenzia motivo della visita, obiettivi, dati citati, abitudini alimentari, stile di vita, criticita', indicazioni concordate, azioni per il paziente, azioni per il professionista, follow-up e note da verificare.
+Non inventare informazioni non presenti nella trascrizione. Se qualcosa non emerge, scrivi "Non emerso".`;
 }
 
 function formatMoney(value) {

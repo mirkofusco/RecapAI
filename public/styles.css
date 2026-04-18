@@ -526,6 +526,15 @@ button:focus-visible {
   gap: 14px;
 }
 
+.prompt-field {
+  grid-column: 1 / -1;
+}
+
+.prompt-input {
+  min-height: 170px;
+  font-size: 0.95rem;
+}
+
 .admin-form {
   display: grid;
   gap: 16px;
