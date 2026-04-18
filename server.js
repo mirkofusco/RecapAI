@@ -19,7 +19,7 @@ const clientSessions = new Map();
 const MAX_RECENT_VISITS = 12;
 const MAX_SAVED_VISITS = 10;
 const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES || 80 * 1024 * 1024);
-const MAX_JSON_BYTES = Number(process.env.MAX_JSON_BYTES || 128 * 1024);
+const MAX_JSON_BYTES = Number(process.env.MAX_JSON_BYTES || 512 * 1024);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const rateBuckets = new Map();
 
@@ -52,6 +52,16 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/api/recap") {
       await handleRecap(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/transcribe-chunk") {
+      await handleTranscribeChunk(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/recap-text") {
+      await handleRecapText(req, res);
       return;
     }
 
@@ -186,6 +196,186 @@ async function handleRecap(req, res) {
   client.lastUsedAt = new Date().toISOString();
   await saveStore(store);
   logEvent("recap_completed", {
+    requestId,
+    clientId: client.id,
+    usedThisMonth: client.usedThisMonth,
+    monthlyLimit: client.monthlyLimit
+  });
+
+  sendJson(res, 200, {
+    transcript,
+    summary,
+    audioSaved: false,
+    usage: {
+      usedThisMonth: client.usedThisMonth,
+      monthlyLimit: client.monthlyLimit,
+      stats: clientUsageStats(client),
+      lastVisit: visitStats,
+      savedVisits: client.savedVisits || []
+    }
+  });
+}
+
+async function handleTranscribeChunk(req, res) {
+  const requestId = createLogId();
+  if (!hasValidOpenAiKey()) {
+    logEvent("chunk_config_error", { requestId, reason: "missing_openai_key" });
+    sendJson(res, 400, { error: "Manca una chiave OpenAI valida." });
+    return;
+  }
+
+  const contentType = req.headers["content-type"] || "";
+  if (!contentType.includes("multipart/form-data")) {
+    logEvent("chunk_bad_request", { requestId, reason: "invalid_content_type" });
+    sendJson(res, 400, { error: "Audio non ricevuto." });
+    return;
+  }
+
+  const contentLength = Number(req.headers["content-length"] || 0);
+  if (contentLength > MAX_AUDIO_BYTES) {
+    logEvent("chunk_rejected", { requestId, reason: "audio_too_large", contentLength });
+    sendJson(res, 413, { error: "Blocco audio troppo grande." });
+    return;
+  }
+
+  const store = await loadStore();
+  const client = getClientFromSession(req, store);
+  if (!client) {
+    logEvent("chunk_unauthorized", { requestId });
+    sendJson(res, 401, { error: "Sessione scaduta. Effettua di nuovo il login." });
+    return;
+  }
+
+  refreshClientMonth(client);
+  if (client.status !== "active") {
+    logEvent("chunk_forbidden", { requestId, clientId: client.id, reason: "client_inactive" });
+    sendJson(res, 403, { error: "Cliente sospeso. Contatta l'amministratore." });
+    return;
+  }
+
+  if (client.usedThisMonth >= client.monthlyLimit) {
+    logEvent("chunk_forbidden", { requestId, clientId: client.id, reason: "monthly_limit" });
+    sendJson(res, 403, { error: "Limite visite mensile raggiunto. Contatta l'amministratore." });
+    return;
+  }
+
+  const request = new Request(`http://localhost${req.url}`, {
+    method: req.method,
+    headers: req.headers,
+    body: req,
+    duplex: "half"
+  });
+  const form = await request.formData();
+  const audio = form.get("audio");
+  const chunkIndex = Number(form.get("chunkIndex") || 0);
+
+  if (!audio || typeof audio === "string") {
+    sendJson(res, 400, { error: "Audio non ricevuto." });
+    return;
+  }
+
+  logEvent("chunk_transcription_started", {
+    requestId,
+    clientId: client.id,
+    chunkIndex,
+    audioBytes: audio.size || 0
+  });
+
+  try {
+    const text = await transcribeAudio(audio, requestId);
+    logEvent("chunk_transcription_completed", {
+      requestId,
+      clientId: client.id,
+      chunkIndex,
+      characters: text.length
+    });
+    sendJson(res, 200, { transcript: text, chunkIndex });
+  } catch (error) {
+    logEvent("chunk_transcription_failed", {
+      requestId,
+      clientId: client.id,
+      chunkIndex,
+      message: error.message
+    });
+    throw error;
+  }
+}
+
+async function handleRecapText(req, res) {
+  const requestId = createLogId();
+  if (!hasValidOpenAiKey()) {
+    logEvent("recap_text_config_error", { requestId, reason: "missing_openai_key" });
+    sendJson(res, 400, { error: "Manca una chiave OpenAI valida." });
+    return;
+  }
+
+  const body = await readJsonBody(req);
+  const transcript = String(body.transcript || "").trim();
+  const patientName = String(body.patientName || "");
+  const visitType = String(body.visitType || "visita nutrizionale");
+  const visitContext = String(body.visitContext || "");
+  const durationSeconds = Number(body.durationSeconds || 0);
+
+  if (!transcript) {
+    sendJson(res, 400, { error: "Trascrizione vuota. Riprova la registrazione." });
+    return;
+  }
+
+  const store = await loadStore();
+  const client = getClientFromSession(req, store);
+  if (!client) {
+    logEvent("recap_text_unauthorized", { requestId });
+    sendJson(res, 401, { error: "Sessione scaduta. Effettua di nuovo il login." });
+    return;
+  }
+
+  refreshClientMonth(client);
+  if (client.status !== "active") {
+    logEvent("recap_text_forbidden", { requestId, clientId: client.id, reason: "client_inactive" });
+    sendJson(res, 403, { error: "Cliente sospeso. Contatta l'amministratore." });
+    return;
+  }
+
+  if (client.usedThisMonth >= client.monthlyLimit) {
+    logEvent("recap_text_forbidden", { requestId, clientId: client.id, reason: "monthly_limit" });
+    sendJson(res, 403, { error: "Limite visite mensile raggiunto. Contatta l'amministratore." });
+    return;
+  }
+
+  logEvent("recap_text_started", {
+    requestId,
+    clientId: client.id,
+    durationSeconds,
+    transcriptCharacters: transcript.length
+  });
+
+  let summaryResult;
+  try {
+    summaryResult = await summarizeVisit(transcript, visitType, visitContext, client.summaryPrompt, requestId);
+  } catch (error) {
+    logEvent("recap_text_failed", {
+      requestId,
+      clientId: client.id,
+      message: error.message
+    });
+    throw error;
+  }
+
+  const summary = summaryResult.text;
+  const visitStats = buildVisitStats(durationSeconds, summaryResult.usage);
+  client.usedThisMonth += 1;
+  client.totalVisits = (client.totalVisits || 0) + 1;
+  applyUsageStats(client, visitStats);
+  saveClientVisit(client, {
+    patientName,
+    visitType,
+    transcript,
+    summary,
+    stats: visitStats
+  });
+  client.lastUsedAt = new Date().toISOString();
+  await saveStore(store);
+  logEvent("recap_text_completed", {
     requestId,
     clientId: client.id,
     usedThisMonth: client.usedThisMonth,

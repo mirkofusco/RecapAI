@@ -34,9 +34,15 @@ const processingTitle = document.querySelector("#processingTitle");
 const processingHint = document.querySelector("#processingHint");
 const summary = document.querySelector("#summary");
 const transcript = document.querySelector("#transcript");
+const LIVE_CHUNK_MS = 20000;
 
 let recorder;
 let chunks = [];
+let chunkUploadChain = Promise.resolve();
+let liveTranscriptParts = [];
+let liveTranscriptionFailed = false;
+let liveChunkIndex = 0;
+let recordingSessionId = 0;
 let timer;
 let audioContext;
 let analyser;
@@ -142,12 +148,24 @@ async function startRecording() {
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     chunks = [];
+    recordingSessionId += 1;
+    chunkUploadChain = Promise.resolve();
+    liveTranscriptParts = [];
+    liveTranscriptionFailed = false;
+    liveChunkIndex = 0;
+    transcript.value = "";
+    summary.value = "";
+    setTranscriptActionsEnabled(false);
+    setSummaryActionsEnabled(false);
     shouldProcessRecording = true;
     const mimeType = preferredMimeType();
     recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
 
     recorder.addEventListener("dataavailable", (event) => {
-      if (event.data.size > 0) chunks.push(event.data);
+      if (event.data.size > 0) {
+        chunks.push(event.data);
+        if (shouldProcessRecording) queueLiveTranscription(event.data, recordingSessionId);
+      }
     });
 
     recorder.addEventListener("stop", () => {
@@ -158,7 +176,7 @@ async function startRecording() {
       }
     });
 
-    recorder.start();
+    recorder.start(LIVE_CHUNK_MS);
     startVoiceMeter(stream);
     startedAt = Date.now();
     timer = window.setInterval(updateTimer, 500);
@@ -185,11 +203,102 @@ function stopRecording() {
   window.clearInterval(timer);
   recordingPanel.classList.add("hidden");
   showProcessing("Sto trascrivendo la visita...", "Sto trasformando l'audio in testo.");
-  setStatus("Sto preparando audio, trascrizione e riassunto.");
+  setStatus("Sto chiudendo gli ultimi blocchi e preparo il riassunto.");
   recorder.stop();
 }
 
 async function processAudio() {
+  try {
+    showProcessing("Sto completando la trascrizione...", "Attendo gli ultimi blocchi audio gia' inviati.");
+    await chunkUploadChain;
+
+    const liveTranscript = liveTranscriptParts.filter(Boolean).join("\n\n").trim();
+    if (!liveTranscriptionFailed && liveTranscript) {
+      await summarizeLiveTranscript(liveTranscript);
+      return;
+    }
+
+    await processFullAudio();
+  } catch (error) {
+    setStatus(error.message);
+  } finally {
+    startBtn.disabled = false;
+    consent.disabled = false;
+    patientName.disabled = false;
+    visitType.disabled = false;
+    visitContext.disabled = false;
+    shouldProcessRecording = false;
+    hideProcessing();
+  }
+}
+
+function queueLiveTranscription(blob, sessionId) {
+  const chunkIndex = liveChunkIndex;
+  liveChunkIndex += 1;
+  chunkUploadChain = chunkUploadChain
+    .then(() => uploadLiveChunk(blob, chunkIndex, sessionId))
+    .catch((error) => {
+      liveTranscriptionFailed = true;
+      setStatus(`Trascrizione live non riuscita: ${error.message}. Usero' il metodo completo a fine visita.`);
+    });
+}
+
+async function uploadLiveChunk(blob, chunkIndex, sessionId) {
+  if (!clientToken || sessionId !== recordingSessionId || blob.size < 1200) return;
+
+  const fileName = `visita-blocco-${chunkIndex + 1}-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
+  const form = new FormData();
+  form.append("audio", blob, fileName);
+  form.append("chunkIndex", chunkIndex);
+
+  const response = await fetch("/api/transcribe-chunk", {
+    method: "POST",
+    headers: { "x-client-token": clientToken },
+    body: form
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "Blocco audio non trascritto.");
+  }
+
+  const text = String(payload.transcript || "").trim();
+  if (!text || sessionId !== recordingSessionId) return;
+
+  liveTranscriptParts[chunkIndex] = text;
+  transcript.value = liveTranscriptParts.filter(Boolean).join("\n\n");
+  setTranscriptActionsEnabled(true);
+  setStatus(`Trascrizione live aggiornata: blocco ${chunkIndex + 1}.`);
+}
+
+async function summarizeLiveTranscript(liveTranscript) {
+  transcript.value = liveTranscript;
+  showProcessing("Sto preparando il riassunto per te...", "La trascrizione era gia' pronta: ora ordino i punti importanti.");
+
+  const response = await fetch("/api/recap-text", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-client-token": clientToken
+    },
+    body: JSON.stringify({
+      patientName: patientName.value,
+      visitType: visitType.value,
+      visitContext: visitContext.value,
+      durationSeconds: Math.floor((Date.now() - startedAt) / 1000),
+      transcript: liveTranscript
+    })
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error || "Riassunto non riuscito.");
+  }
+
+  applyRecapPayload(payload);
+}
+
+async function processFullAudio() {
   const audioBlob = new Blob(chunks, { type: chunks[0]?.type || "audio/webm" });
   const fileName = `visita-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
   const form = new FormData();
@@ -199,49 +308,41 @@ async function processAudio() {
   form.append("visitContext", visitContext.value);
   form.append("durationSeconds", Math.floor((Date.now() - startedAt) / 1000));
 
-  try {
-    showProcessing("Sto trascrivendo la visita...", "Ascolto completato. Ora preparo il testo.");
-    const response = await fetch("/api/recap", {
-      method: "POST",
-      headers: { "x-client-token": clientToken },
-      body: form
-    });
+  showProcessing("Sto trascrivendo la visita completa...", "Uso il metodo sicuro con audio completo.");
+  const response = await fetch("/api/recap", {
+    method: "POST",
+    headers: { "x-client-token": clientToken },
+    body: form
+  });
 
-    const payload = await response.json();
+  const payload = await response.json();
 
-    if (!response.ok) {
-      throw new Error(payload.error || "Elaborazione non riuscita.");
-    }
-
-    transcript.value = payload.transcript;
-    showProcessing("Sto preparando il riassunto per te...", "Sto ordinando i punti importanti della visita.");
-    summary.value = payload.summary;
-    setTranscriptActionsEnabled(Boolean(payload.transcript));
-    setSummaryActionsEnabled(Boolean(payload.summary));
-    currentClient.usedThisMonth = payload.usage.usedThisMonth;
-    currentClient.monthlyLimit = payload.usage.monthlyLimit;
-    currentClient.usageStats = payload.usage.stats;
-    currentClient.recentVisits = [
-      {
-        at: new Date().toISOString(),
-        ...payload.usage.lastVisit
-      },
-      ...(currentClient.recentVisits || [])
-    ].slice(0, 12);
-    currentClient.savedVisits = payload.usage.savedVisits || currentClient.savedVisits || [];
-    currentSummaryTitle = currentClient.savedVisits?.[0]?.title || buildLocalVisitTitle();
-    updateClientLabels();
-    setStatus(`Riassunto pronto. Visite usate: ${payload.usage.usedThisMonth}/${payload.usage.monthlyLimit}.`);
-  } catch (error) {
-    setStatus(error.message);
-  } finally {
-    startBtn.disabled = false;
-    consent.disabled = false;
-    patientName.disabled = false;
-    visitType.disabled = false;
-    visitContext.disabled = false;
-    hideProcessing();
+  if (!response.ok) {
+    throw new Error(payload.error || "Elaborazione non riuscita.");
   }
+
+  applyRecapPayload(payload);
+}
+
+function applyRecapPayload(payload) {
+  transcript.value = payload.transcript;
+  summary.value = payload.summary;
+  setTranscriptActionsEnabled(Boolean(payload.transcript));
+  setSummaryActionsEnabled(Boolean(payload.summary));
+  currentClient.usedThisMonth = payload.usage.usedThisMonth;
+  currentClient.monthlyLimit = payload.usage.monthlyLimit;
+  currentClient.usageStats = payload.usage.stats;
+  currentClient.recentVisits = [
+    {
+      at: new Date().toISOString(),
+      ...payload.usage.lastVisit
+    },
+    ...(currentClient.recentVisits || [])
+  ].slice(0, 12);
+  currentClient.savedVisits = payload.usage.savedVisits || currentClient.savedVisits || [];
+  currentSummaryTitle = currentClient.savedVisits?.[0]?.title || buildLocalVisitTitle();
+  updateClientLabels();
+  setStatus(`Riassunto pronto. Visite usate: ${payload.usage.usedThisMonth}/${payload.usage.monthlyLimit}.`);
 }
 
 function resetVisit() {
@@ -251,6 +352,11 @@ function resetVisit() {
   }
 
   chunks = [];
+  recordingSessionId += 1;
+  chunkUploadChain = Promise.resolve();
+  liveTranscriptParts = [];
+  liveTranscriptionFailed = false;
+  liveChunkIndex = 0;
   transcript.value = "";
   summary.value = "";
   setTranscriptActionsEnabled(false);
