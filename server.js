@@ -69,26 +69,42 @@ const server = createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`Server attivo sulla porta ${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Recap AI pronto su http://${HOST}:${PORT}`);
 });
 
+function createLogId() {
+  return randomBytes(4).toString("hex");
+}
+
+function logEvent(event, details = {}) {
+  console.log(JSON.stringify({
+    at: new Date().toISOString(),
+    event,
+    ...details
+  }));
+}
+
 async function handleRecap(req, res) {
-  if (!OPENAI_API_KEY) {
+  const requestId = createLogId();
+  if (!hasValidOpenAiKey()) {
+    logEvent("recap_config_error", { requestId, reason: "missing_openai_key" });
     sendJson(res, 400, {
-      error: "Manca OPENAI_API_KEY. Crea un file .env partendo da .env.example."
+      error: "Manca una chiave OpenAI valida. Apri CONFIGURA_CHIAVE.txt e sostituisci incolla_la_tua_chiave_qui con la chiave reale."
     });
     return;
   }
 
   const contentType = req.headers["content-type"] || "";
   if (!contentType.includes("multipart/form-data")) {
+    logEvent("recap_bad_request", { requestId, reason: "invalid_content_type" });
     sendJson(res, 400, { error: "Registra una visita prima di generare il riassunto." });
     return;
   }
 
   const contentLength = Number(req.headers["content-length"] || 0);
   if (contentLength > MAX_AUDIO_BYTES) {
+    logEvent("recap_rejected", { requestId, reason: "audio_too_large", contentLength });
     sendJson(res, 413, { error: "Audio troppo grande. Riduci la durata della registrazione." });
     return;
   }
@@ -115,23 +131,46 @@ async function handleRecap(req, res) {
   const store = await loadStore();
   const client = getClientFromSession(req, store);
   if (!client) {
+    logEvent("recap_unauthorized", { requestId });
     sendJson(res, 401, { error: "Sessione scaduta. Effettua di nuovo il login." });
     return;
   }
 
   refreshClientMonth(client);
   if (client.status !== "active") {
+    logEvent("recap_forbidden", { requestId, clientId: client.id, reason: "client_inactive" });
     sendJson(res, 403, { error: "Cliente sospeso. Contatta l'amministratore." });
     return;
   }
 
   if (client.usedThisMonth >= client.monthlyLimit) {
+    logEvent("recap_forbidden", { requestId, clientId: client.id, reason: "monthly_limit" });
     sendJson(res, 403, { error: "Limite visite mensile raggiunto. Contatta l'amministratore." });
     return;
   }
 
-  const transcript = await transcribeAudio(audio);
-  const summaryResult = await summarizeVisit(transcript, visitType, visitContext);
+  logEvent("recap_started", {
+    requestId,
+    clientId: client.id,
+    durationSeconds,
+    contentLength,
+    audioBytes: audio.size || 0
+  });
+
+  let transcript;
+  let summaryResult;
+  try {
+    transcript = await transcribeAudio(audio, requestId);
+    summaryResult = await summarizeVisit(transcript, visitType, visitContext, requestId);
+  } catch (error) {
+    logEvent("recap_failed", {
+      requestId,
+      clientId: client.id,
+      message: error.message
+    });
+    throw error;
+  }
+
   const summary = summaryResult.text;
   const visitStats = buildVisitStats(durationSeconds, summaryResult.usage);
   client.usedThisMonth += 1;
@@ -146,6 +185,12 @@ async function handleRecap(req, res) {
   });
   client.lastUsedAt = new Date().toISOString();
   await saveStore(store);
+  logEvent("recap_completed", {
+    requestId,
+    clientId: client.id,
+    usedThisMonth: client.usedThisMonth,
+    monthlyLimit: client.monthlyLimit
+  });
 
   sendJson(res, 200, {
     transcript,
@@ -312,7 +357,12 @@ async function handleClient(req, res) {
   sendJson(res, 404, { error: "Endpoint cliente non trovato." });
 }
 
-async function transcribeAudio(audioFile) {
+async function transcribeAudio(audioFile, requestId) {
+  logEvent("transcription_started", {
+    requestId,
+    model: TRANSCRIBE_MODEL,
+    audioBytes: audioFile.size || 0
+  });
   const data = new FormData();
   data.append("model", TRANSCRIBE_MODEL);
   data.append("language", "it");
@@ -330,13 +380,27 @@ async function transcribeAudio(audioFile) {
   const payload = await response.json();
 
   if (!response.ok) {
+    logEvent("transcription_failed", {
+      requestId,
+      status: response.status,
+      message: payload.error?.message || "Trascrizione non riuscita."
+    });
     throw new Error(payload.error?.message || "Trascrizione non riuscita.");
   }
 
+  logEvent("transcription_completed", {
+    requestId,
+    characters: (payload.text || "").length
+  });
   return payload.text || "";
 }
 
-async function summarizeVisit(transcript, visitType, visitContext) {
+async function summarizeVisit(transcript, visitType, visitContext, requestId) {
+  logEvent("summary_started", {
+    requestId,
+    model: SUMMARY_MODEL,
+    transcriptCharacters: transcript.length
+  });
   const prompt = `
 Ruolo:
 Sei Recap AI, un assistente di documentazione per professionisti sanitari e consulenze.
@@ -416,11 +480,22 @@ ${transcript}
   const payload = await response.json();
 
   if (!response.ok) {
+    logEvent("summary_failed", {
+      requestId,
+      status: response.status,
+      message: payload.error?.message || "Riassunto non riuscito."
+    });
     throw new Error(payload.error?.message || "Riassunto non riuscito.");
   }
 
+  const text = payload.output_text || extractResponseText(payload);
+  logEvent("summary_completed", {
+    requestId,
+    characters: text.length
+  });
+
   return {
-    text: payload.output_text || extractResponseText(payload),
+    text,
     usage: normalizeResponseUsage(payload.usage)
   };
 }
@@ -876,4 +951,8 @@ function loadEnv() {
 
 function awaitableReadEnv(path) {
   return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+function hasValidOpenAiKey() {
+  return Boolean(OPENAI_API_KEY && OPENAI_API_KEY !== "incolla_la_tua_chiave_qui");
 }
