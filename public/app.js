@@ -39,7 +39,7 @@ const processingTitle = document.querySelector("#processingTitle");
 const processingHint = document.querySelector("#processingHint");
 const summary = document.querySelector("#summary");
 const transcript = document.querySelector("#transcript");
-const LIVE_CHUNK_MS = 18000;
+const LIVE_CHUNK_MS = 45000;
 const CHUNK_RETRY_DELAYS = [900, 2200, 4200];
 
 let recorder;
@@ -247,12 +247,16 @@ async function processAudio() {
     await chunkUploadChain;
 
     const liveTranscript = liveTranscriptParts.filter(Boolean).join("\n\n").trim();
-    if (!liveTranscriptionFailed && liveTranscript) {
-      await summarizeLiveTranscript(liveTranscript, currentDraft?.id || "");
-      return;
+    try {
+      await processFullAudio(currentDraft?.id || "");
+    } catch (fullAudioError) {
+      if (liveTranscript) {
+        setStatus("Trascrizione completa non riuscita. Uso la bozza live recuperata.");
+        await summarizeLiveTranscript(liveTranscript, currentDraft?.id || "");
+        return;
+      }
+      throw fullAudioError;
     }
-
-    await processFullAudio();
   } catch (error) {
     setStatus(humanError(error));
   } finally {
@@ -378,7 +382,7 @@ async function startDraft() {
   return payload.draft;
 }
 
-async function processFullAudio() {
+async function processFullAudio(draftId = "") {
   const audioBlob = getRecordedAudioBlob();
   const fileName = `visita-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
   const form = new FormData();
@@ -387,8 +391,9 @@ async function processFullAudio() {
   form.append("visitType", visitType.value);
   form.append("visitContext", visitContext.value);
   form.append("durationSeconds", Math.floor((Date.now() - startedAt) / 1000));
+  if (draftId) form.append("draftId", draftId);
 
-  showProcessing("Sto trascrivendo la visita completa...", "Uso il metodo sicuro con audio completo.");
+  showProcessing("Sto trascrivendo la visita completa...", "Uso l'audio intero per massima precisione.");
   const response = await fetch("/api/recap", {
     method: "POST",
     headers: { "x-client-token": clientToken },

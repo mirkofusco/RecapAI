@@ -162,6 +162,7 @@ async function handleRecap(req, res) {
   const visitType = form.get("visitType") || "visita nutrizionale";
   const visitContext = form.get("visitContext") || "";
   const durationSeconds = Number(form.get("durationSeconds") || 0);
+  const draftId = String(form.get("draftId") || "");
 
   if (!audio || typeof audio === "string") {
     sendJson(res, 400, { error: "Audio non ricevuto." });
@@ -223,6 +224,9 @@ async function handleRecap(req, res) {
     summary,
     stats: visitStats
   });
+  if (draftId && client.activeDraft?.id === draftId) {
+    delete client.activeDraft;
+  }
   client.lastUsedAt = new Date().toISOString();
   await saveStore(store);
   logEvent("recap_completed", {
