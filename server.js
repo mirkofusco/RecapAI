@@ -1565,14 +1565,22 @@ function transcribeCostPerMinute() {
 }
 
 function summaryInputCostPerMillion() {
+  if (SUMMARY_MODEL === "gpt-5.4") return 2.5;
   if (SUMMARY_MODEL.includes("mini")) return 0.75;
   if (SUMMARY_MODEL.includes("nano")) return 0.2;
+  if (SUMMARY_MODEL.startsWith("gpt-5.2")) return 1.75;
+  if (SUMMARY_MODEL.startsWith("gpt-5.1") || SUMMARY_MODEL.startsWith("gpt-5")) return 1.25;
+  if (SUMMARY_MODEL.startsWith("gpt-4o")) return 2.5;
   return 0.2;
 }
 
 function summaryOutputCostPerMillion() {
+  if (SUMMARY_MODEL === "gpt-5.4") return 15;
   if (SUMMARY_MODEL.includes("mini")) return 4.5;
   if (SUMMARY_MODEL.includes("nano")) return 1.25;
+  if (SUMMARY_MODEL.startsWith("gpt-5.2")) return 14;
+  if (SUMMARY_MODEL.startsWith("gpt-5.1") || SUMMARY_MODEL.startsWith("gpt-5")) return 10;
+  if (SUMMARY_MODEL.startsWith("gpt-4o")) return 10;
   return 1.25;
 }
 
