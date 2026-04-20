@@ -201,7 +201,11 @@ async function handleRecap(req, res) {
   let transcript;
   let summaryResult;
   try {
-    transcript = await transcribeAudio(audio, requestId, buildTranscriptionContext(patientName, visitType, visitContext));
+    transcript = await transcribeAudio(
+      audio,
+      requestId,
+      buildTranscriptionContext(patientName, visitType, visitContext, client.summaryPrompt)
+    );
     summaryResult = await summarizeVisit(transcript, visitType, visitContext, client.summaryPrompt, requestId);
   } catch (error) {
     logEvent("recap_failed", {
@@ -966,11 +970,12 @@ function cleanOptionalText(value) {
   return text || "Non inserito.";
 }
 
-function buildTranscriptionContext(patientName, visitType, visitContext) {
+function buildTranscriptionContext(patientName, visitType, visitContext, clientPrompt) {
   const parts = [
+    `Prompt/settore configurato per questa utenza: ${String(clientPrompt || defaultSummaryPrompt()).trim()}`,
     `Tipo colloquio: ${String(visitType || "visita professionale").trim()}`,
     patientName ? `Nome paziente/cliente: ${String(patientName).trim()}` : "",
-    visitContext ? `Contesto e parole attese: ${String(visitContext).trim()}` : ""
+    visitContext ? `Contesto specifico inserito prima della registrazione: ${String(visitContext).trim()}` : ""
   ].filter(Boolean);
 
   return parts.join("\n");
@@ -980,9 +985,10 @@ function buildTranscriptionPrompt(context = "") {
   const cleanContext = String(context || "").trim();
   return [
     TRANSCRIBE_PROMPT,
-    "Contesto utile per riconoscere termini tecnici, nomi propri e misure:",
+    "Contesto utile per riconoscere settore, termini tecnici, nomi propri, ruoli e misure:",
     cleanContext || "Nessun contesto aggiuntivo.",
-    "Presta particolare attenzione a numeri, unita' di misura, alimenti, farmaci, patologie, esami, date e nomi propri.",
+    "Adatta il vocabolario al settore indicato nel prompt dell'utenza: visite sanitarie, riunioni di lavoro, consulenze, coaching o altri contesti.",
+    "Presta particolare attenzione a numeri, unita' di misura, nomi propri, ruoli, decisioni, scadenze, task, alimenti, farmaci, patologie, esami e date quando presenti.",
     "Trascrivi solo cio' che senti: se una parola e' poco chiara scegli la forma piu' probabile senza aggiungere spiegazioni."
   ].join("\n");
 }
