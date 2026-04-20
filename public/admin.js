@@ -265,28 +265,53 @@ function renderUsage(container, client) {
   const usagePercent = Math.min(100, Math.round((client.usedThisMonth / client.monthlyLimit) * 100));
   const stats = client.usageStats || {};
   const recentVisits = client.recentVisits || [];
+  const monthlyCost = Number(stats.monthlyEstimatedCostUsd || 0);
+  const monthlyTranscriptionCost = Number(stats.monthlyTranscriptionCostUsd || 0);
+  const monthlyTextCost = Number(stats.monthlyTextModelCostUsd || 0);
+  const averageVisitCost = client.usedThisMonth ? monthlyCost / client.usedThisMonth : 0;
+  const remainingVisits = Math.max(0, Number(client.monthlyLimit || 0) - Number(client.usedThisMonth || 0));
   container.innerHTML = `
-    <div>
+    <div class="cost-summary-grid">
+      <article class="cost-card primary">
+        <span>Spesa mese stimata</span>
+        <strong>${formatMoney(monthlyCost)}</strong>
+      </article>
+      <article class="cost-card">
+        <span>Media per visita</span>
+        <strong>${formatMoney(averageVisitCost)}</strong>
+      </article>
+      <article class="cost-card">
+        <span>Trascrizione</span>
+        <strong>${formatMoney(monthlyTranscriptionCost)}</strong>
+      </article>
+      <article class="cost-card">
+        <span>AI testo</span>
+        <strong>${formatMoney(monthlyTextCost)}</strong>
+      </article>
+    </div>
+    <p class="cost-note">Stima interna basata sui prezzi dei modelli configurati. Il valore reale va confrontato periodicamente con la dashboard OpenAI.</p>
+    <div class="plan-summary">
       <strong>${client.usedThisMonth}/${client.monthlyLimit}</strong>
-      <span>visite usate questo mese</span>
+      <span>visite usate questo mese - ${remainingVisits} disponibili</span>
     </div>
     <div class="usage-bar" aria-hidden="true">
       <span style="width: ${usagePercent}%"></span>
     </div>
-    <div class="client-meta">
-      Minuti mese: ${formatNumber(stats.monthlyMinutes || 0)}<br />
-      Minuti trascritti mese: ${formatNumber(stats.monthlyTranscriptionMinutes || 0)}<br />
-      Token mese: ${formatInteger(stats.monthlySummaryTotalTokens || 0)}<br />
-      Costo trascrizione mese: ${formatMoney(stats.monthlyTranscriptionCostUsd || 0)}<br />
-      Costo AI testo mese: ${formatMoney(stats.monthlyTextModelCostUsd || 0)}<br />
-      Costo mese stimato: ${formatMoney(stats.monthlyEstimatedCostUsd || 0)}<br />
-      Costo trascrizione totale: ${formatMoney(stats.totalTranscriptionCostUsd || 0)}<br />
-      Costo AI testo totale: ${formatMoney(stats.totalTextModelCostUsd || 0)}<br />
-      Costo totale stimato: ${formatMoney(stats.totalEstimatedCostUsd || 0)}<br />
-      Totale visite: ${client.totalVisits || 0}<br />
-      Ultimo uso: ${client.lastUsedAt ? new Date(client.lastUsedAt).toLocaleString("it-IT") : "Mai"}<br />
-      Password impostata: ${client.hasPassword ? "Si" : "No"}
+    <div class="cost-breakdown">
+      <div><span>Minuti mese</span><strong>${formatNumber(stats.monthlyMinutes || 0)}</strong></div>
+      <div><span>Minuti trascritti</span><strong>${formatNumber(stats.monthlyTranscriptionMinutes || 0)}</strong></div>
+      <div><span>Spesa totale stimata</span><strong>${formatMoney(stats.totalEstimatedCostUsd || 0)}</strong></div>
+      <div><span>Totale visite</span><strong>${client.totalVisits || 0}</strong></div>
+      <div><span>Ultimo uso</span><strong>${client.lastUsedAt ? new Date(client.lastUsedAt).toLocaleString("it-IT") : "Mai"}</strong></div>
+      <div><span>Password</span><strong>${client.hasPassword ? "Impostata" : "Mancante"}</strong></div>
     </div>
+    <details class="technical-costs">
+      <summary>Dettaglio tecnico token</summary>
+      <p>Token testo mese: ${formatInteger(stats.monthlySummaryTotalTokens || 0)}</p>
+      <p>Token testo totali: ${formatInteger(stats.totalSummaryTotalTokens || 0)}</p>
+      <p>Costo trascrizione totale: ${formatMoney(stats.totalTranscriptionCostUsd || 0)}</p>
+      <p>Costo AI testo totale: ${formatMoney(stats.totalTextModelCostUsd || 0)}</p>
+    </details>
     <div class="recent-visits">
       <strong>Ultimi recap</strong>
       ${
@@ -295,8 +320,7 @@ function renderUsage(container, client) {
               .slice(0, 5)
               .map((visit) => {
                 const minutes = formatNumber((visit.durationSeconds || 0) / 60);
-                const tokens = formatInteger((visit.summaryInputTokens || 0) + (visit.summaryOutputTokens || 0));
-                return `<p>${new Date(visit.at).toLocaleString("it-IT")} - ${minutes} min - ${tokens} token - trascr. ${formatMoney(visit.transcribeCostUsd || 0)} - testo ${formatMoney(visit.summaryCostUsd || 0)} - tot. ${formatMoney(visit.estimatedCostUsd || 0)}</p>`;
+                return `<p><strong>${formatMoney(visit.estimatedCostUsd || 0)}</strong> - ${new Date(visit.at).toLocaleString("it-IT")} - ${minutes} min <span>(${formatMoney(visit.transcribeCostUsd || 0)} trascrizione, ${formatMoney(visit.summaryCostUsd || 0)} testo)</span></p>`;
               })
               .join("")
           : "<p>Nessun recap generato.</p>"
@@ -318,7 +342,7 @@ function updateStats() {
   totalClients.textContent = clients.length;
   activeClients.textContent = clients.filter((client) => client.status === "active").length;
   monthlyVisits.textContent = formatInteger(dashboardStats.monthlyVisits ?? clients.reduce((total, client) => total + Number(client.usedThisMonth || 0), 0));
-  monthlyTokens.textContent = formatInteger(dashboardStats.monthlyTokens || 0);
+  monthlyTokens.textContent = formatMoney((dashboardStats.monthlyEstimatedCostUsd || 0) / Math.max(1, dashboardStats.monthlyVisits || 0));
   monthlyCost.textContent = formatMoney(dashboardStats.monthlyEstimatedCostUsd || 0);
   currentMonthLabel.textContent = new Date().toLocaleDateString("it-IT", { month: "short", year: "numeric" });
 }

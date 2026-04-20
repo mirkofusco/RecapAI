@@ -853,6 +853,96 @@ button:focus-visible {
   font-size: 1.2rem;
 }
 
+.cost-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.cost-card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 14px;
+}
+
+.cost-card.primary {
+  border-color: rgba(8, 123, 131, 0.34);
+  background: linear-gradient(180deg, #f7fcfc, #ffffff);
+}
+
+.cost-card span,
+.plan-summary span,
+.cost-breakdown span,
+.technical-costs summary,
+.technical-costs p,
+.recent-visits span {
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.cost-card strong {
+  margin-top: 5px;
+  font-size: 1.45rem;
+  color: var(--brand);
+}
+
+.cost-card.primary strong {
+  font-size: 1.85rem;
+}
+
+.cost-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+
+.plan-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.plan-summary strong {
+  font-size: 1.35rem;
+}
+
+.cost-breakdown {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cost-breakdown div {
+  border-radius: 8px;
+  background: var(--surface-tint);
+  padding: 10px;
+}
+
+.cost-breakdown strong {
+  margin-top: 4px;
+  font-size: 1rem;
+  color: var(--ink);
+}
+
+.technical-costs {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #ffffff;
+}
+
+.technical-costs summary {
+  cursor: pointer;
+}
+
+.technical-costs p {
+  margin: 7px 0 0;
+}
+
 .usage-bar {
   height: 10px;
   border-radius: 999px;
@@ -1004,6 +1094,10 @@ button:focus-visible {
   line-height: 1.35;
 }
 
+.recent-visits p strong {
+  color: var(--brand);
+}
+
 .client-actions button {
   min-height: 38px;
   padding: 0 10px;
@@ -1055,6 +1149,8 @@ button:focus-visible {
   .admin-stats,
   .form-grid,
   .code-box,
+  .cost-summary-grid,
+  .cost-breakdown,
   .plan-buttons,
   .client-actions,
   .detail-actions,
