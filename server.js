@@ -15,6 +15,7 @@ const PUBLIC_DIR = join(process.cwd(), "public");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "recap-admin";
 const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-4o-transcribe-diarize";
+const FALLBACK_TRANSCRIBE_MODEL = process.env.FALLBACK_TRANSCRIBE_MODEL || "gpt-4o-transcribe";
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "gpt-5.4-nano";
 const TRANSCRIBE_PROMPT = process.env.TRANSCRIBE_PROMPT || [
   "Trascrivi in italiano in modo fedele una visita o consulenza professionale.",
@@ -725,16 +726,45 @@ async function handleClient(req, res) {
 }
 
 async function transcribeAudio(audioFile, requestId) {
+  const attempts = [
+    { model: TRANSCRIBE_MODEL, withPrompt: true },
+    { model: TRANSCRIBE_MODEL, withPrompt: false },
+    { model: FALLBACK_TRANSCRIBE_MODEL, withPrompt: true },
+    { model: FALLBACK_TRANSCRIBE_MODEL, withPrompt: false }
+  ].filter((attempt, index, list) => {
+    return list.findIndex((item) => item.model === attempt.model && item.withPrompt === attempt.withPrompt) === index;
+  });
+
+  let lastError;
+  for (const attempt of attempts) {
+    try {
+      return await transcribeAudioWithModel(audioFile, requestId, attempt.model, attempt.withPrompt);
+    } catch (error) {
+      lastError = error;
+      logEvent("transcription_attempt_failed", {
+        requestId,
+        model: attempt.model,
+        withPrompt: attempt.withPrompt,
+        message: error.message
+      });
+    }
+  }
+
+  throw lastError || new Error("Trascrizione non riuscita.");
+}
+
+async function transcribeAudioWithModel(audioFile, requestId, model, withPrompt) {
   logEvent("transcription_started", {
     requestId,
-    model: TRANSCRIBE_MODEL,
+    model,
+    withPrompt,
     audioBytes: audioFile.size || 0
   });
   const data = new FormData();
-  data.append("model", TRANSCRIBE_MODEL);
+  data.append("model", model);
   data.append("language", "it");
   data.append("response_format", "json");
-  data.append("prompt", TRANSCRIBE_PROMPT);
+  if (withPrompt) data.append("prompt", TRANSCRIBE_PROMPT);
   data.append("file", audioFile, audioFile.name || "visita.webm");
 
   const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
@@ -758,6 +788,7 @@ async function transcribeAudio(audioFile, requestId) {
 
   logEvent("transcription_completed", {
     requestId,
+    model,
     characters: (payload.text || "").length
   });
   return payload.text || "";

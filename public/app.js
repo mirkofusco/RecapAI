@@ -29,6 +29,9 @@ const visitContext = document.querySelector("#visitContext");
 const statusText = document.querySelector("#status");
 const timerText = document.querySelector("#timer");
 const recordingPanel = document.querySelector("#recordingPanel");
+const audioReviewPanel = document.querySelector("#audioReviewPanel");
+const audioPlayer = document.querySelector("#audioPlayer");
+const voiceOrb = document.querySelector("#voiceOrb");
 const voiceMeter = document.querySelector("#voiceMeter");
 const recordingHint = document.querySelector("#recordingHint");
 const processingPanel = document.querySelector("#processingPanel");
@@ -220,7 +223,7 @@ async function startRecording() {
     processingPanel.classList.add("hidden");
     setStatus("Registrazione in corso.");
   } catch (error) {
-    setStatus("Microfono non disponibile o permesso negato.");
+    setStatus(error?.message || "Microfono non disponibile o permesso negato.");
   }
 }
 
@@ -533,6 +536,8 @@ function prepareAudioDownload() {
   latestAudioBlob = getRecordedAudioBlob();
   if (latestAudioUrl) URL.revokeObjectURL(latestAudioUrl);
   latestAudioUrl = URL.createObjectURL(latestAudioBlob);
+  audioPlayer.src = latestAudioUrl;
+  audioReviewPanel.classList.remove("hidden");
   downloadAudioBtn.disabled = false;
 }
 
@@ -560,6 +565,9 @@ function clearAudioDownload() {
   latestAudioBlob = null;
   if (latestAudioUrl) URL.revokeObjectURL(latestAudioUrl);
   latestAudioUrl = "";
+  audioPlayer.removeAttribute("src");
+  audioPlayer.load();
+  audioReviewPanel.classList.add("hidden");
   downloadAudioBtn.disabled = true;
 }
 
@@ -608,6 +616,15 @@ function startVoiceMeter(stream) {
       bar.style.height = `${height}px`;
       bar.style.opacity = String(Math.max(0.28, voiceLevel + 0.22));
     });
+    const orbScale = (1 + voiceLevel * 0.32).toFixed(3);
+    voiceOrb.style.setProperty("--voice-level", voiceLevel.toFixed(3));
+    voiceOrb.style.setProperty("--orb-glow", `${Math.round(22 + voiceLevel * 34)}px`);
+    voiceOrb.style.setProperty("--orb-glow-wide", `${Math.round(48 + voiceLevel * 58)}px`);
+    voiceOrb.style.setProperty("--orb-ring-1", `${Math.round(-15 - voiceLevel * 18)}px`);
+    voiceOrb.style.setProperty("--orb-ring-2", `${Math.round(-28 - voiceLevel * 22)}px`);
+    voiceOrb.style.setProperty("--orb-ring-3", `${Math.round(-42 - voiceLevel * 25)}px`);
+    voiceOrb.style.setProperty("--orb-opacity", (0.34 + voiceLevel * 0.54).toFixed(3));
+    voiceOrb.style.transform = `scale(${orbScale})`;
     recordingHint.textContent = voiceLevel > 0.10 ? "Voce rilevata. Registrazione in corso." : "Sto ascoltando. Parla vicino al microfono.";
     meterAnimation = requestAnimationFrame(draw);
   };
@@ -621,6 +638,14 @@ function stopVoiceMeter() {
   if (audioContext) audioContext.close().catch(() => {});
   audioContext = null;
   analyser = null;
+  voiceOrb.style.setProperty("--voice-level", "0");
+  voiceOrb.style.setProperty("--orb-glow", "22px");
+  voiceOrb.style.setProperty("--orb-glow-wide", "48px");
+  voiceOrb.style.setProperty("--orb-ring-1", "-15px");
+  voiceOrb.style.setProperty("--orb-ring-2", "-28px");
+  voiceOrb.style.setProperty("--orb-ring-3", "-42px");
+  voiceOrb.style.setProperty("--orb-opacity", "0.34");
+  voiceOrb.style.transform = "scale(1)";
 }
 
 function showProcessing(title, hint) {

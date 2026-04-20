@@ -100,10 +100,24 @@
               <button id="resetBtn" type="button" class="secondary">Nuova visita</button>
             </div>
 
+            <div id="audioReviewPanel" class="audio-review-panel hidden">
+              <div>
+                <strong>Audio della visita</strong>
+                <span>Puoi riascoltarlo o scaricarlo prima di iniziare una nuova visita.</span>
+              </div>
+              <audio id="audioPlayer" controls></audio>
+            </div>
+
             <div id="recordingPanel" class="recording-panel hidden" aria-live="polite">
               <div class="recording-head">
                 <span class="recording-dot"></span>
                 <strong id="recordingTitle">Registrazione attiva</strong>
+              </div>
+              <div class="voice-orb-wrap">
+                <div id="voiceOrb" class="voice-orb" aria-hidden="true">
+                  <span></span>
+                  <strong>REC</strong>
+                </div>
               </div>
               <div id="voiceMeter" class="voice-meter" aria-label="Livello voce"></div>
               <p id="recordingHint">Sto ascoltando la voce.</p>
