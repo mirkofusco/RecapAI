@@ -408,6 +408,12 @@ async function processFullAudio(draftId = "") {
   const payload = await response.json();
 
   if (!response.ok) {
+    if (payload.transcript) {
+      transcript.value = payload.transcript;
+      summary.value = payload.summary || "";
+      setTranscriptActionsEnabled(true);
+      setSummaryActionsEnabled(Boolean(summary.value));
+    }
     throw new Error(payload.error || "Elaborazione non riuscita.");
   }
 

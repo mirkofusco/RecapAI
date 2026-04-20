@@ -35,6 +35,7 @@ const MAX_RECENT_VISITS = 12;
 const MAX_SAVED_VISITS = 10;
 const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES || 80 * 1024 * 1024);
 const MAX_JSON_BYTES = Number(process.env.MAX_JSON_BYTES || 2 * 1024 * 1024);
+const MAX_TRANSCRIPTION_CONTEXT_CHARS = Number(process.env.MAX_TRANSCRIPTION_CONTEXT_CHARS || 1200);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const rateBuckets = new Map();
 
@@ -199,21 +200,53 @@ async function handleRecap(req, res) {
   });
 
   let transcript;
-  let summaryResult;
   try {
     transcript = await transcribeAudio(
       audio,
       requestId,
       buildTranscriptionContext(patientName, visitType, visitContext, client.summaryPrompt)
     );
+  } catch (error) {
+    logEvent("recap_failed", {
+      requestId,
+      clientId: client.id,
+      phase: "transcription",
+      message: error.message
+    });
+    sendJson(res, 502, {
+      error: `Trascrizione non riuscita. Codice assistenza: ${requestId}. Scarica l'audio e riprova.`,
+      requestId
+    });
+    return;
+  }
+
+  if (!String(transcript || "").trim()) {
+    logEvent("recap_empty_transcript", { requestId, clientId: client.id });
+    sendJson(res, 422, {
+      error: `Non ho rilevato parlato nell'audio. Codice assistenza: ${requestId}. Controlla microfono e volume.`,
+      transcript: "",
+      requestId
+    });
+    return;
+  }
+
+  let summaryResult;
+  try {
     summaryResult = await summarizeVisit(transcript, visitType, visitContext, client.summaryPrompt, requestId);
   } catch (error) {
     logEvent("recap_failed", {
       requestId,
       clientId: client.id,
+      phase: "summary",
       message: error.message
     });
-    throw error;
+    sendJson(res, 502, {
+      error: `Trascrizione completata, ma riassunto non riuscito. Codice assistenza: ${requestId}.`,
+      transcript,
+      summary: "",
+      requestId
+    });
+    return;
   }
 
   const summary = summaryResult.text;
@@ -783,7 +816,7 @@ async function transcribeAudioWithModel(audioFile, requestId, model, withPrompt,
     body: data
   });
 
-  const payload = await response.json();
+  const payload = await readOpenAiPayload(response);
 
   if (!response.ok) {
     logEvent("transcription_failed", {
@@ -800,6 +833,21 @@ async function transcribeAudioWithModel(audioFile, requestId, model, withPrompt,
     characters: (payload.text || "").length
   });
   return payload.text || "";
+}
+
+async function readOpenAiPayload(response) {
+  const text = await response.text();
+  if (!text) return {};
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {
+      error: {
+        message: text.slice(0, 500) || "Risposta OpenAI non leggibile."
+      }
+    };
+  }
 }
 
 async function summarizeVisit(transcript, visitType, visitContext, summaryPrompt, requestId) {
@@ -972,10 +1020,10 @@ function cleanOptionalText(value) {
 
 function buildTranscriptionContext(patientName, visitType, visitContext, clientPrompt) {
   const parts = [
-    `Prompt/settore configurato per questa utenza: ${String(clientPrompt || defaultSummaryPrompt()).trim()}`,
+    `Prompt/settore configurato per questa utenza: ${truncateText(clientPrompt || defaultSummaryPrompt(), MAX_TRANSCRIPTION_CONTEXT_CHARS)}`,
     `Tipo colloquio: ${String(visitType || "visita professionale").trim()}`,
     patientName ? `Nome paziente/cliente: ${String(patientName).trim()}` : "",
-    visitContext ? `Contesto specifico inserito prima della registrazione: ${String(visitContext).trim()}` : ""
+    visitContext ? `Contesto specifico inserito prima della registrazione: ${truncateText(visitContext, 500)}` : ""
   ].filter(Boolean);
 
   return parts.join("\n");
@@ -993,10 +1041,15 @@ function buildTranscriptionPrompt(context = "") {
   ].join("\n");
 }
 
+function truncateText(value, maxLength) {
+  const text = String(value || "").trim().replace(/\s+/g, " ");
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
 function defaultSummaryPrompt() {
   return `Sei Recap AI, un assistente di documentazione per professionisti sanitari e consulenze.
-Il cliente principale e' una nutrizionista: crea un riepilogo preciso, professionale e utile per cartella/appunti.
-Evidenzia motivo della visita, obiettivi, dati citati, abitudini alimentari, stile di vita, criticita', indicazioni concordate, azioni per il paziente, azioni per il professionista, follow-up e note da verificare.
+Configura questo prompt in base al settore del cliente: nutrizione, riunioni di lavoro, consulenze, coaching o altre attivita'.
+Per ogni recap evidenzia contesto, punti principali, dati citati, decisioni, azioni da fare, responsabili, scadenze, follow-up e note da verificare.
 Non inventare informazioni non presenti nella trascrizione. Se qualcosa non emerge, scrivi "Non emerso".`;
 }
 
