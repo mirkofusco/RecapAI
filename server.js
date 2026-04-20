@@ -1,4 +1,6 @@
 import { createServer } from "node:http";
+import { connect as tlsConnect } from "node:tls";
+import { connect as netConnect } from "node:net";
 import { readFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -15,6 +17,12 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "recap-admin";
 const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "gpt-5.4-nano";
 const STORE_PATH = join(process.cwd(), "data", "clients.json");
+const APP_URL = process.env.APP_URL || "https://recap-ai-frky.onrender.com";
+const SMTP_HOST = process.env.SMTP_HOST || "";
+const SMTP_PORT = Number(process.env.SMTP_PORT || 587);
+const SMTP_USER = process.env.SMTP_USER || "";
+const SMTP_PASS = process.env.SMTP_PASS || "";
+const SMTP_FROM = process.env.SMTP_FROM || SMTP_USER;
 const clientSessions = new Map();
 const MAX_RECENT_VISITS = 12;
 const MAX_SAVED_VISITS = 10;
@@ -506,7 +514,8 @@ async function handleAdmin(req, res) {
     const { client, password } = createClient(body);
     store.clients.unshift(client);
     await saveStore(store);
-    sendJson(res, 201, { client: adminClient(client), password });
+    const welcomeEmail = await sendWelcomeEmail(client, password);
+    sendJson(res, 201, { client: adminClient(client), password, welcomeEmail });
     return;
   }
 
@@ -557,7 +566,8 @@ async function handleAdmin(req, res) {
     const password = String(body.password || "").trim() || createPassword();
     setClientPassword(client, password);
     await saveStore(store);
-    sendJson(res, 200, { client: adminClient(client), password });
+    const welcomeEmail = body.sendWelcomeEmail === true ? await sendWelcomeEmail(client, password) : { sent: false, reason: "not_requested" };
+    sendJson(res, 200, { client: adminClient(client), password, welcomeEmail });
     return;
   }
 
@@ -831,6 +841,151 @@ function sendText(res, status, text) {
   applySecurityHeaders(res);
   res.writeHead(status, { "Content-Type": "text/plain; charset=utf-8" });
   res.end(text);
+}
+
+async function sendWelcomeEmail(client, password) {
+  if (!SMTP_HOST || !SMTP_FROM) {
+    return { sent: false, reason: "smtp_not_configured" };
+  }
+
+  const subject = "Benvenuto in Recap AI";
+  const text = [
+    `Ciao ${client.name},`,
+    "",
+    "la tua area Recap AI e' pronta.",
+    "",
+    `Link: ${APP_URL}`,
+    `Email: ${client.email}`,
+    `Password: ${password}`,
+    "",
+    "Ti consigliamo di conservare queste credenziali in modo sicuro.",
+    "",
+    "Recap AI"
+  ].join("\n");
+
+  try {
+    await sendSmtpMail({
+      to: client.email,
+      subject,
+      text
+    });
+    logEvent("welcome_email_sent", { clientId: client.id, email: client.email });
+    return { sent: true };
+  } catch (error) {
+    logEvent("welcome_email_failed", { clientId: client.id, email: client.email, message: error.message });
+    return { sent: false, reason: error.message };
+  }
+}
+
+async function sendSmtpMail({ to, subject, text }) {
+  let socket = await openSmtpSocket(SMTP_PORT === 465);
+  try {
+    await expectSmtp(socket, 220);
+    await smtpCommand(socket, `EHLO ${SMTP_HOST}`, 250);
+
+    if (SMTP_PORT !== 465) {
+      await smtpCommand(socket, "STARTTLS", 220);
+      socket = await upgradeSmtpSocket(socket);
+      await smtpCommand(socket, `EHLO ${SMTP_HOST}`, 250);
+    }
+
+    if (SMTP_USER && SMTP_PASS) {
+      await smtpCommand(socket, "AUTH LOGIN", 334);
+      await smtpCommand(socket, Buffer.from(SMTP_USER).toString("base64"), 334);
+      await smtpCommand(socket, Buffer.from(SMTP_PASS).toString("base64"), 235);
+    }
+
+    const fromAddress = extractEmailAddress(SMTP_FROM);
+    const message = buildEmailMessage(fromAddress, to, subject, text);
+    await smtpCommand(socket, `MAIL FROM:<${fromAddress}>`, 250);
+    await smtpCommand(socket, `RCPT TO:<${to}>`, 250);
+    await smtpCommand(socket, "DATA", 354);
+    await smtpCommand(socket, `${message}\r\n.`, 250);
+    await smtpCommand(socket, "QUIT", 221);
+  } finally {
+    socket.end();
+  }
+}
+
+function openSmtpSocket(secure) {
+  return new Promise((resolve, reject) => {
+    const socket = secure
+      ? tlsConnect(SMTP_PORT, SMTP_HOST, { servername: SMTP_HOST }, () => resolve(socket))
+      : netConnect(SMTP_PORT, SMTP_HOST, () => resolve(socket));
+    socket.setTimeout(15000, () => {
+      socket.destroy();
+      reject(new Error("Timeout invio email."));
+    });
+    socket.once("error", reject);
+  });
+}
+
+function upgradeSmtpSocket(socket) {
+  return new Promise((resolve, reject) => {
+    socket.removeAllListeners("data");
+    socket.removeAllListeners("error");
+    const tlsSocket = tlsConnect({ socket, servername: SMTP_HOST }, () => resolve(tlsSocket));
+    tlsSocket.setTimeout(15000, () => {
+      tlsSocket.destroy();
+      reject(new Error("Timeout invio email."));
+    });
+    tlsSocket.once("error", reject);
+  });
+}
+
+function smtpCommand(socket, command, expectedCode) {
+  socket.write(`${command}\r\n`);
+  return expectSmtp(socket, expectedCode);
+}
+
+function expectSmtp(socket, expectedCode) {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const cleanup = () => {
+      socket.off("data", onData);
+      socket.off("error", onError);
+    };
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+    const onData = (chunk) => {
+      buffer += chunk.toString("utf8");
+      const lines = buffer.split(/\r?\n/).filter(Boolean);
+      const lastLine = lines.at(-1) || "";
+      if (/^\d{3}-/.test(lastLine) || !/^\d{3} /.test(lastLine)) return;
+      cleanup();
+      if (!lastLine.startsWith(String(expectedCode))) {
+        reject(new Error(`SMTP ${lastLine || "risposta non valida"}`));
+        return;
+      }
+      resolve(lastLine);
+    };
+    socket.on("data", onData);
+    socket.once("error", onError);
+  });
+}
+
+function buildEmailMessage(from, to, subject, text) {
+  return [
+    `From: ${SMTP_FROM}`,
+    `To: ${to}`,
+    `Subject: ${encodeMailSubject(subject)}`,
+    "MIME-Version: 1.0",
+    "Content-Type: text/plain; charset=UTF-8",
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    text.replace(/^\./gm, "..").replace(/\r?\n/g, "\r\n")
+  ].join("\r\n");
+}
+
+function encodeMailSubject(subject) {
+  return `=?UTF-8?B?${Buffer.from(subject, "utf8").toString("base64")}?=`;
+}
+
+function extractEmailAddress(value) {
+  const match = String(value || "").match(/<([^>]+)>/);
+  return (match?.[1] || value || SMTP_USER).trim();
 }
 
 function applySecurityHeaders(res) {

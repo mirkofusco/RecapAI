@@ -185,7 +185,9 @@ function openDetail(client) {
       await navigator.clipboard.writeText(lastCredentials).catch(() => {});
       selectedClientId = data.client.id;
       await loadClients();
-      setStatus("Cliente creato. Credenziali copiate.");
+      setStatus(data.welcomeEmail?.sent
+        ? "Cliente creato. Email di benvenuto inviata e credenziali copiate."
+        : "Cliente creato. Credenziali copiate. Email non inviata: controlla SMTP su Render.");
       return;
     }
 

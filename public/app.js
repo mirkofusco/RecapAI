@@ -157,7 +157,15 @@ async function startRecording() {
   try {
     clearAudioDownload();
     currentDraft = await startDraft();
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: { ideal: 1 },
+        sampleRate: { ideal: 48000 }
+      }
+    });
     chunks = [];
     recordingSessionId += 1;
     chunkUploadChain = Promise.resolve();
@@ -530,9 +538,10 @@ function initVoiceMeter() {
 }
 
 function startVoiceMeter(stream) {
-  audioContext = new AudioContext();
+  audioContext = new AudioContext({ sampleRate: 48000 });
   analyser = audioContext.createAnalyser();
-  analyser.fftSize = 256;
+  analyser.fftSize = 512;
+  analyser.smoothingTimeConstant = 0.72;
   const source = audioContext.createMediaStreamSource(stream);
   source.connect(analyser);
   const data = new Uint8Array(analyser.frequencyBinCount);
@@ -541,14 +550,14 @@ function startVoiceMeter(stream) {
   const draw = () => {
     analyser.getByteFrequencyData(data);
     const average = data.reduce((sum, value) => sum + value, 0) / data.length;
-    const voiceLevel = Math.min(1, average / 82);
+    const voiceLevel = Math.min(1, average / 48);
     bars.forEach((bar, index) => {
       const wave = Math.sin(Date.now() / 130 + index * 0.65) * 0.18 + 0.82;
       const height = Math.max(10, Math.round((voiceLevel * wave + 0.08) * 58));
       bar.style.height = `${height}px`;
       bar.style.opacity = String(Math.max(0.28, voiceLevel + 0.22));
     });
-    recordingHint.textContent = voiceLevel > 0.18 ? "Voce rilevata. Registrazione in corso." : "Sto ascoltando. Parla vicino al microfono.";
+    recordingHint.textContent = voiceLevel > 0.10 ? "Voce rilevata. Registrazione in corso." : "Sto ascoltando. Parla vicino al microfono.";
     meterAnimation = requestAnimationFrame(draw);
   };
 
