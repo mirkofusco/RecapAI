@@ -16,6 +16,12 @@ const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "recap-admin";
 const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "gpt-5.4-nano";
+const TRANSCRIBE_PROMPT = process.env.TRANSCRIBE_PROMPT || [
+  "Trascrivi in italiano in modo fedele una visita o consulenza professionale.",
+  "Mantieni nomi, misure, alimenti, farmaci, patologie e indicazioni cosi' come vengono detti.",
+  "Non aggiungere commenti, non riassumere, non inventare parole mancanti.",
+  "Se una parola e' incerta, trascrivi la forma piu' probabile senza scrivere note tecniche."
+].join(" ");
 const STORE_PATH = join(process.cwd(), "data", "clients.json");
 const APP_URL = process.env.APP_URL || "https://recap-ai-frky.onrender.com";
 const SMTP_HOST = process.env.SMTP_HOST || "";
@@ -652,6 +658,7 @@ async function transcribeAudio(audioFile, requestId) {
   data.append("model", TRANSCRIBE_MODEL);
   data.append("language", "it");
   data.append("response_format", "json");
+  data.append("prompt", TRANSCRIBE_PROMPT);
   data.append("file", audioFile, audioFile.name || "visita.webm");
 
   const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {

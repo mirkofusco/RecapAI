@@ -35,7 +35,8 @@ const processingTitle = document.querySelector("#processingTitle");
 const processingHint = document.querySelector("#processingHint");
 const summary = document.querySelector("#summary");
 const transcript = document.querySelector("#transcript");
-const LIVE_CHUNK_MS = 10000;
+const LIVE_CHUNK_MS = 18000;
+const CHUNK_RETRY_DELAYS = [900, 2200, 4200];
 
 let recorder;
 let chunks = [];
@@ -241,7 +242,7 @@ async function processAudio() {
 
     await processFullAudio();
   } catch (error) {
-    setStatus(error.message);
+    setStatus(humanError(error));
   } finally {
     startBtn.disabled = false;
     consent.disabled = false;
@@ -257,11 +258,27 @@ function queueLiveTranscription(blob, sessionId) {
   const chunkIndex = liveChunkIndex;
   liveChunkIndex += 1;
   chunkUploadChain = chunkUploadChain
-    .then(() => uploadLiveChunk(blob, chunkIndex, sessionId))
+    .then(() => uploadLiveChunkWithRetry(blob, chunkIndex, sessionId))
     .catch((error) => {
       liveTranscriptionFailed = true;
-      setStatus(`Trascrizione live non riuscita: ${error.message}. Usero' il metodo completo a fine visita.`);
+      console.warn("Trascrizione live non riuscita, usero' il metodo completo.", error);
+      setStatus("Continuo a registrare. Recupero automaticamente la trascrizione a fine visita.");
     });
+}
+
+async function uploadLiveChunkWithRetry(blob, chunkIndex, sessionId) {
+  let lastError;
+  for (let attempt = 0; attempt <= CHUNK_RETRY_DELAYS.length; attempt += 1) {
+    try {
+      await uploadLiveChunk(blob, chunkIndex, sessionId);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt >= CHUNK_RETRY_DELAYS.length || sessionId !== recordingSessionId) break;
+      await wait(CHUNK_RETRY_DELAYS[attempt]);
+    }
+  }
+  throw lastError;
 }
 
 async function uploadLiveChunk(blob, chunkIndex, sessionId) {
@@ -451,10 +468,34 @@ async function autoRecoverDraft() {
     showProcessing("Sto recuperando la visita...", "Ho trovato una trascrizione salvata automaticamente e preparo il riassunto.");
     await summarizeLiveTranscript(draft.transcript, draft.id);
   } catch (error) {
-    setStatus(`Trascrizione recuperata. ${error.message}`);
+    setStatus(`Trascrizione recuperata. ${humanError(error)}`);
   } finally {
     hideProcessing();
   }
+}
+
+function wait(ms) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function humanError(error) {
+  const message = String(error?.message || "");
+  if (/sessione|unauthorized|401/i.test(message)) {
+    return "Sessione scaduta. Accedi di nuovo e riprova.";
+  }
+  if (/limite|monthly/i.test(message)) {
+    return "Limite visite raggiunto. Contatta l'amministratore.";
+  }
+  if (/network|fetch|failed|timeout|ECONN|ETIMEDOUT/i.test(message)) {
+    return "Connessione instabile. La trascrizione salvata verra' recuperata automaticamente.";
+  }
+  if (/audio|trascr/i.test(message)) {
+    return "Non sono riuscito a completare la trascrizione. Scarica l'audio e riprova.";
+  }
+  if (/riassunto|summary/i.test(message)) {
+    return "La trascrizione e' pronta, ma il riassunto non e' riuscito. Riprova tra poco.";
+  }
+  return "Qualcosa non e' andato. Ho mantenuto quello che era gia' stato salvato.";
 }
 
 async function discardDraft(showMessage = true) {
