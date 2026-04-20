@@ -275,8 +275,13 @@ function renderUsage(container, client) {
     </div>
     <div class="client-meta">
       Minuti mese: ${formatNumber(stats.monthlyMinutes || 0)}<br />
+      Minuti trascritti mese: ${formatNumber(stats.monthlyTranscriptionMinutes || 0)}<br />
       Token mese: ${formatInteger(stats.monthlySummaryTotalTokens || 0)}<br />
+      Costo trascrizione mese: ${formatMoney(stats.monthlyTranscriptionCostUsd || 0)}<br />
+      Costo AI testo mese: ${formatMoney(stats.monthlyTextModelCostUsd || 0)}<br />
       Costo mese stimato: ${formatMoney(stats.monthlyEstimatedCostUsd || 0)}<br />
+      Costo trascrizione totale: ${formatMoney(stats.totalTranscriptionCostUsd || 0)}<br />
+      Costo AI testo totale: ${formatMoney(stats.totalTextModelCostUsd || 0)}<br />
       Costo totale stimato: ${formatMoney(stats.totalEstimatedCostUsd || 0)}<br />
       Totale visite: ${client.totalVisits || 0}<br />
       Ultimo uso: ${client.lastUsedAt ? new Date(client.lastUsedAt).toLocaleString("it-IT") : "Mai"}<br />
@@ -291,7 +296,7 @@ function renderUsage(container, client) {
               .map((visit) => {
                 const minutes = formatNumber((visit.durationSeconds || 0) / 60);
                 const tokens = formatInteger((visit.summaryInputTokens || 0) + (visit.summaryOutputTokens || 0));
-                return `<p>${new Date(visit.at).toLocaleString("it-IT")} - ${minutes} min - ${tokens} token - ${formatMoney(visit.estimatedCostUsd || 0)}</p>`;
+                return `<p>${new Date(visit.at).toLocaleString("it-IT")} - ${minutes} min - ${tokens} token - trascr. ${formatMoney(visit.transcribeCostUsd || 0)} - testo ${formatMoney(visit.summaryCostUsd || 0)} - tot. ${formatMoney(visit.estimatedCostUsd || 0)}</p>`;
               })
               .join("")
           : "<p>Nessun recap generato.</p>"

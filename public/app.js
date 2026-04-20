@@ -19,6 +19,7 @@ const copySummaryBtn = document.querySelector("#copySummaryBtn");
 const printSummaryBtn = document.querySelector("#printSummaryBtn");
 const pdfSummaryBtn = document.querySelector("#pdfSummaryBtn");
 const copyTranscriptBtn = document.querySelector("#copyTranscriptBtn");
+const reworkTranscriptBtn = document.querySelector("#reworkTranscriptBtn");
 const printTranscriptBtn = document.querySelector("#printTranscriptBtn");
 const pdfTranscriptBtn = document.querySelector("#pdfTranscriptBtn");
 const consent = document.querySelector("#consent");
@@ -44,6 +45,7 @@ let chunkUploadChain = Promise.resolve();
 let liveTranscriptParts = [];
 let liveTranscriptionFailed = false;
 let liveChunkIndex = 0;
+let lastChunkStartedAt = 0;
 let recordingSessionId = 0;
 let timer;
 let audioContext;
@@ -70,6 +72,7 @@ copySummaryBtn.addEventListener("click", () => copyText(summary.value, "Riassunt
 printSummaryBtn.addEventListener("click", () => printDocument("Riassunto", summary.value));
 pdfSummaryBtn.addEventListener("click", () => downloadPdf("Riassunto", summary.value));
 copyTranscriptBtn.addEventListener("click", () => copyText(transcript.value, "Trascrizione copiata."));
+reworkTranscriptBtn.addEventListener("click", reworkTranscriptText);
 printTranscriptBtn.addEventListener("click", () => printDocument("Trascrizione", transcript.value));
 pdfTranscriptBtn.addEventListener("click", () => downloadPdf("Trascrizione", transcript.value));
 initVoiceMeter();
@@ -173,6 +176,7 @@ async function startRecording() {
     liveTranscriptParts = [];
     liveTranscriptionFailed = false;
     liveChunkIndex = 0;
+    lastChunkStartedAt = Date.now();
     transcript.value = "";
     summary.value = "";
     setTranscriptActionsEnabled(false);
@@ -184,7 +188,12 @@ async function startRecording() {
     recorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) {
         chunks.push(event.data);
-        if (shouldProcessRecording) queueLiveTranscription(event.data, recordingSessionId);
+        if (shouldProcessRecording) {
+          const now = Date.now();
+          const chunkDurationSeconds = Math.max(1, Math.round((now - lastChunkStartedAt) / 1000));
+          lastChunkStartedAt = now;
+          queueLiveTranscription(event.data, recordingSessionId, chunkDurationSeconds);
+        }
       }
     });
 
@@ -254,11 +263,11 @@ async function processAudio() {
   }
 }
 
-function queueLiveTranscription(blob, sessionId) {
+function queueLiveTranscription(blob, sessionId, chunkDurationSeconds) {
   const chunkIndex = liveChunkIndex;
   liveChunkIndex += 1;
   chunkUploadChain = chunkUploadChain
-    .then(() => uploadLiveChunkWithRetry(blob, chunkIndex, sessionId))
+    .then(() => uploadLiveChunkWithRetry(blob, chunkIndex, sessionId, chunkDurationSeconds))
     .catch((error) => {
       liveTranscriptionFailed = true;
       console.warn("Trascrizione live non riuscita, usero' il metodo completo.", error);
@@ -266,11 +275,11 @@ function queueLiveTranscription(blob, sessionId) {
     });
 }
 
-async function uploadLiveChunkWithRetry(blob, chunkIndex, sessionId) {
+async function uploadLiveChunkWithRetry(blob, chunkIndex, sessionId, chunkDurationSeconds) {
   let lastError;
   for (let attempt = 0; attempt <= CHUNK_RETRY_DELAYS.length; attempt += 1) {
     try {
-      await uploadLiveChunk(blob, chunkIndex, sessionId);
+      await uploadLiveChunk(blob, chunkIndex, sessionId, chunkDurationSeconds);
       return;
     } catch (error) {
       lastError = error;
@@ -281,13 +290,14 @@ async function uploadLiveChunkWithRetry(blob, chunkIndex, sessionId) {
   throw lastError;
 }
 
-async function uploadLiveChunk(blob, chunkIndex, sessionId) {
+async function uploadLiveChunk(blob, chunkIndex, sessionId, chunkDurationSeconds) {
   if (!clientToken || sessionId !== recordingSessionId || blob.size < 1200) return;
 
   const fileName = `visita-blocco-${chunkIndex + 1}-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
   const form = new FormData();
   form.append("audio", blob, fileName);
   form.append("chunkIndex", chunkIndex);
+  form.append("chunkDurationSeconds", chunkDurationSeconds);
   if (currentDraft?.id) form.append("draftId", currentDraft.id);
 
   const response = await fetch("/api/transcribe-chunk", {
@@ -687,8 +697,49 @@ function setSummaryActionsEnabled(enabled) {
 
 function setTranscriptActionsEnabled(enabled) {
   copyTranscriptBtn.disabled = !enabled;
+  reworkTranscriptBtn.disabled = !enabled;
   printTranscriptBtn.disabled = !enabled;
   pdfTranscriptBtn.disabled = !enabled;
+}
+
+async function reworkTranscriptText() {
+  if (!transcript.value.trim()) {
+    setStatus("Non c'e' ancora una trascrizione da rielaborare.");
+    return;
+  }
+
+  try {
+    reworkTranscriptBtn.disabled = true;
+    showProcessing("Sto rielaborando la trascrizione...", "Metto il testo in ordine logico senza inventare informazioni.");
+    const response = await fetch("/api/rework-transcript", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-client-token": clientToken
+      },
+      body: JSON.stringify({
+        visitType: visitType.value,
+        transcript: transcript.value
+      })
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error || "Rielaborazione non riuscita.");
+    }
+
+    transcript.value = payload.transcript || transcript.value;
+    if (currentClient && payload.usage?.stats) {
+      currentClient.usageStats = payload.usage.stats;
+      renderUsageDetails();
+    }
+    setTranscriptActionsEnabled(Boolean(transcript.value));
+    setStatus("Trascrizione rielaborata e ordinata.");
+  } catch (error) {
+    setStatus(humanError(error));
+  } finally {
+    hideProcessing();
+    reworkTranscriptBtn.disabled = !transcript.value.trim();
+  }
 }
 
 function printDocument(kind, text) {

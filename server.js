@@ -14,7 +14,7 @@ const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_DIR = join(process.cwd(), "public");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "recap-admin";
-const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe";
+const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-4o-transcribe-diarize";
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "gpt-5.4-nano";
 const TRANSCRIBE_PROMPT = process.env.TRANSCRIBE_PROMPT || [
   "Trascrivi in italiano in modo fedele una visita o consulenza professionale.",
@@ -76,6 +76,11 @@ const server = createServer(async (req, res) => {
 
     if (req.method === "POST" && req.url === "/api/recap-text") {
       await handleRecapText(req, res);
+      return;
+    }
+
+    if (req.method === "POST" && req.url === "/api/rework-transcript") {
+      await handleReworkTranscript(req, res);
       return;
     }
 
@@ -292,6 +297,7 @@ async function handleTranscribeChunk(req, res) {
   const form = await request.formData();
   const audio = form.get("audio");
   const chunkIndex = Number(form.get("chunkIndex") || 0);
+  const chunkDurationSeconds = Number(form.get("chunkDurationSeconds") || 0);
   const draftId = String(form.get("draftId") || "");
 
   if (!audio || typeof audio === "string") {
@@ -308,14 +314,19 @@ async function handleTranscribeChunk(req, res) {
 
   try {
     const text = await transcribeAudio(audio, requestId);
+    const transcriptionCostUsd = transcriptionCostForSeconds(chunkDurationSeconds);
+    applyTranscriptionUsageStats(client, chunkDurationSeconds, transcriptionCostUsd);
     if (draftId && client.activeDraft?.id === draftId) {
       appendDraftTranscript(client.activeDraft, chunkIndex, text);
-      await saveStore(store);
+      client.activeDraft.transcriptionCostUsd = Number(client.activeDraft.transcriptionCostUsd || 0) + transcriptionCostUsd;
     }
+    await saveStore(store);
     logEvent("chunk_transcription_completed", {
       requestId,
       clientId: client.id,
       chunkIndex,
+      chunkDurationSeconds,
+      transcriptionCostUsd,
       characters: text.length
     });
     sendJson(res, 200, { transcript: text, chunkIndex });
@@ -400,10 +411,15 @@ async function handleRecapText(req, res) {
   }
 
   const summary = summaryResult.text;
-  const visitStats = buildVisitStats(durationSeconds, summaryResult.usage);
+  const liveTranscriptionCostUsd = draftId && client.activeDraft?.id === draftId
+    ? Number(client.activeDraft.transcriptionCostUsd || 0)
+    : 0;
+  const visitStats = buildVisitStats(durationSeconds, summaryResult.usage, {
+    transcribeCostUsd: liveTranscriptionCostUsd
+  });
   client.usedThisMonth += 1;
   client.totalVisits = (client.totalVisits || 0) + 1;
-  applyUsageStats(client, visitStats);
+  applyUsageStats(client, visitStats, { includeTranscriptionCost: !liveTranscriptionCostUsd });
   saveClientVisit(client, {
     patientName,
     visitType,
@@ -437,6 +453,62 @@ async function handleRecapText(req, res) {
   });
 }
 
+async function handleReworkTranscript(req, res) {
+  const requestId = createLogId();
+  const body = await readJsonBody(req);
+  const transcript = String(body.transcript || "").trim();
+  const visitType = String(body.visitType || "visita professionale");
+
+  if (!transcript) {
+    sendJson(res, 400, { error: "Trascrizione vuota." });
+    return;
+  }
+
+  const store = await loadStore();
+  const client = getClientFromSession(req, store);
+  if (!client) {
+    logEvent("rework_unauthorized", { requestId });
+    sendJson(res, 401, { error: "Sessione scaduta. Effettua di nuovo il login." });
+    return;
+  }
+
+  refreshClientMonth(client);
+  if (client.status !== "active") {
+    sendJson(res, 403, { error: "Cliente sospeso. Contatta l'amministratore." });
+    return;
+  }
+
+  logEvent("rework_started", {
+    requestId,
+    clientId: client.id,
+    transcriptCharacters: transcript.length
+  });
+
+  try {
+    const result = await reworkTranscript(transcript, visitType, requestId);
+    applyTextModelUsageStats(client, result.usage);
+    await saveStore(store);
+    logEvent("rework_completed", {
+      requestId,
+      clientId: client.id,
+      characters: result.text.length
+    });
+    sendJson(res, 200, {
+      transcript: result.text,
+      usage: {
+        stats: clientUsageStats(client)
+      }
+    });
+  } catch (error) {
+    logEvent("rework_failed", {
+      requestId,
+      clientId: client.id,
+      message: error.message
+    });
+    throw error;
+  }
+}
+
 async function handleDraftStart(req, res) {
   const requestId = createLogId();
   const body = await readJsonBody(req);
@@ -467,6 +539,7 @@ async function handleDraftStart(req, res) {
     visitType: String(body.visitType || "visita nutrizionale"),
     visitContext: String(body.visitContext || ""),
     durationSeconds: 0,
+    transcriptionCostUsd: 0,
     transcriptParts: [],
     transcript: ""
   };
@@ -589,8 +662,11 @@ async function handleAdmin(req, res) {
     client.usedThisMonth = 0;
     client.month = currentMonth();
     client.monthlySeconds = 0;
+    client.monthlyTranscriptionSeconds = 0;
     client.monthlySummaryInputTokens = 0;
     client.monthlySummaryOutputTokens = 0;
+    client.monthlyTranscriptionCostUsd = 0;
+    client.monthlyTextModelCostUsd = 0;
     client.monthlyEstimatedCostUsd = 0;
     await saveStore(store);
     sendJson(res, 200, { client: adminClient(client) });
@@ -791,6 +867,61 @@ ${transcript}
 
   return {
     text,
+    usage: normalizeResponseUsage(payload.usage)
+  };
+}
+
+async function reworkTranscript(transcript, visitType, requestId) {
+  const prompt = `
+Rielabora questa trascrizione di una ${visitType}.
+
+Obiettivo:
+- Correggi refusi evidenti della trascrizione.
+- Metti le informazioni in ordine logico e leggibile.
+- Mantieni il contenuto fedele: non inventare dati, diagnosi, misure, farmaci, alimenti o indicazioni.
+- Se una frase e' incerta, mantienila con "Da verificare".
+- Non creare un riassunto: conserva i dettagli importanti, ma rendili chiari.
+- Rimuovi ripetizioni, esitazioni e frammenti inutili solo se non cambiano il significato.
+
+Formato:
+Trascrizione rielaborata
+
+Partecipanti / contesto:
+
+Punti emersi in ordine:
+
+Dettagli citati:
+
+Indicazioni o decisioni:
+
+Punti da verificare:
+
+Testo ordinato:
+
+Trascrizione originale:
+${transcript}
+`;
+
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENAI_API_KEY}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      model: SUMMARY_MODEL,
+      input: prompt,
+      temperature: 0.1
+    })
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    throw new Error(payload.error?.message || "Rielaborazione non riuscita.");
+  }
+
+  return {
+    text: payload.output_text || extractResponseText(payload),
     usage: normalizeResponseUsage(payload.usage)
   };
 }
@@ -1071,10 +1202,16 @@ function createClient(body) {
     totalVisits: 0,
     totalSeconds: 0,
     monthlySeconds: 0,
+    totalTranscriptionSeconds: 0,
+    monthlyTranscriptionSeconds: 0,
     totalSummaryInputTokens: 0,
     totalSummaryOutputTokens: 0,
     monthlySummaryInputTokens: 0,
     monthlySummaryOutputTokens: 0,
+    totalTranscriptionCostUsd: 0,
+    monthlyTranscriptionCostUsd: 0,
+    totalTextModelCostUsd: 0,
+    monthlyTextModelCostUsd: 0,
     totalEstimatedCostUsd: 0,
     monthlyEstimatedCostUsd: 0,
     recentVisits: [],
@@ -1107,8 +1244,11 @@ function refreshClientMonth(client) {
     client.month = month;
     client.usedThisMonth = 0;
     client.monthlySeconds = 0;
+    client.monthlyTranscriptionSeconds = 0;
     client.monthlySummaryInputTokens = 0;
     client.monthlySummaryOutputTokens = 0;
+    client.monthlyTranscriptionCostUsd = 0;
+    client.monthlyTextModelCostUsd = 0;
     client.monthlyEstimatedCostUsd = 0;
   }
 }
@@ -1185,25 +1325,63 @@ function adminClient(client) {
   };
 }
 
-function applyUsageStats(client, stats) {
+function applyUsageStats(client, stats, options = {}) {
+  const includeTranscriptionCost = options.includeTranscriptionCost !== false;
   client.totalSeconds = Number(client.totalSeconds || 0) + stats.durationSeconds;
   client.monthlySeconds = Number(client.monthlySeconds || 0) + stats.durationSeconds;
   client.totalSummaryInputTokens = Number(client.totalSummaryInputTokens || 0) + stats.summaryInputTokens;
   client.totalSummaryOutputTokens = Number(client.totalSummaryOutputTokens || 0) + stats.summaryOutputTokens;
   client.monthlySummaryInputTokens = Number(client.monthlySummaryInputTokens || 0) + stats.summaryInputTokens;
   client.monthlySummaryOutputTokens = Number(client.monthlySummaryOutputTokens || 0) + stats.summaryOutputTokens;
-  client.totalEstimatedCostUsd = Number(client.totalEstimatedCostUsd || 0) + stats.estimatedCostUsd;
-  client.monthlyEstimatedCostUsd = Number(client.monthlyEstimatedCostUsd || 0) + stats.estimatedCostUsd;
+  if (includeTranscriptionCost) {
+    client.totalTranscriptionCostUsd = Number(client.totalTranscriptionCostUsd || 0) + stats.transcribeCostUsd;
+    client.monthlyTranscriptionCostUsd = Number(client.monthlyTranscriptionCostUsd || 0) + stats.transcribeCostUsd;
+    client.totalTranscriptionSeconds = Number(client.totalTranscriptionSeconds || 0) + stats.durationSeconds;
+    client.monthlyTranscriptionSeconds = Number(client.monthlyTranscriptionSeconds || 0) + stats.durationSeconds;
+  }
+  client.totalTextModelCostUsd = Number(client.totalTextModelCostUsd || 0) + stats.summaryCostUsd;
+  client.monthlyTextModelCostUsd = Number(client.monthlyTextModelCostUsd || 0) + stats.summaryCostUsd;
+  const costToAdd = stats.summaryCostUsd + (includeTranscriptionCost ? stats.transcribeCostUsd : 0);
+  client.totalEstimatedCostUsd = Number(client.totalEstimatedCostUsd || 0) + costToAdd;
+  client.monthlyEstimatedCostUsd = Number(client.monthlyEstimatedCostUsd || 0) + costToAdd;
   client.recentVisits = [
     {
       at: new Date().toISOString(),
       durationSeconds: stats.durationSeconds,
       summaryInputTokens: stats.summaryInputTokens,
       summaryOutputTokens: stats.summaryOutputTokens,
+      transcribeCostUsd: stats.transcribeCostUsd,
+      summaryCostUsd: stats.summaryCostUsd,
       estimatedCostUsd: stats.estimatedCostUsd
     },
     ...(client.recentVisits || [])
   ].slice(0, MAX_RECENT_VISITS);
+}
+
+function applyTranscriptionUsageStats(client, durationSeconds, costUsd) {
+  client.totalTranscriptionCostUsd = Number(client.totalTranscriptionCostUsd || 0) + costUsd;
+  client.monthlyTranscriptionCostUsd = Number(client.monthlyTranscriptionCostUsd || 0) + costUsd;
+  client.totalEstimatedCostUsd = Number(client.totalEstimatedCostUsd || 0) + costUsd;
+  client.monthlyEstimatedCostUsd = Number(client.monthlyEstimatedCostUsd || 0) + costUsd;
+  client.totalTranscriptionSeconds = Number(client.totalTranscriptionSeconds || 0) + Number(durationSeconds || 0);
+  client.monthlyTranscriptionSeconds = Number(client.monthlyTranscriptionSeconds || 0) + Number(durationSeconds || 0);
+}
+
+function applyTextModelUsageStats(client, usage) {
+  const inputTokens = Number(usage.inputTokens || 0);
+  const outputTokens = Number(usage.outputTokens || 0);
+  const costUsd =
+    (inputTokens / 1_000_000) * summaryInputCostPerMillion() +
+    (outputTokens / 1_000_000) * summaryOutputCostPerMillion();
+
+  client.totalSummaryInputTokens = Number(client.totalSummaryInputTokens || 0) + inputTokens;
+  client.totalSummaryOutputTokens = Number(client.totalSummaryOutputTokens || 0) + outputTokens;
+  client.monthlySummaryInputTokens = Number(client.monthlySummaryInputTokens || 0) + inputTokens;
+  client.monthlySummaryOutputTokens = Number(client.monthlySummaryOutputTokens || 0) + outputTokens;
+  client.totalTextModelCostUsd = Number(client.totalTextModelCostUsd || 0) + costUsd;
+  client.monthlyTextModelCostUsd = Number(client.monthlyTextModelCostUsd || 0) + costUsd;
+  client.totalEstimatedCostUsd = Number(client.totalEstimatedCostUsd || 0) + costUsd;
+  client.monthlyEstimatedCostUsd = Number(client.monthlyEstimatedCostUsd || 0) + costUsd;
 }
 
 function saveClientVisit(client, visit) {
@@ -1219,7 +1397,8 @@ function saveClientVisit(client, visit) {
       at: now,
       summary: trimStoredText(visit.summary, 18000),
       transcript: trimStoredText(visit.transcript, 30000),
-      durationSeconds: visit.stats.durationSeconds
+      durationSeconds: visit.stats.durationSeconds,
+      estimatedCostUsd: visit.stats.estimatedCostUsd
     },
     ...(client.savedVisits || [])
   ].slice(0, MAX_SAVED_VISITS);
@@ -1281,12 +1460,14 @@ function trimStoredText(value, maxLength) {
   return text.length > maxLength ? `${text.slice(0, maxLength)}\n\n[Testo abbreviato]` : text;
 }
 
-function buildVisitStats(durationSeconds, usage) {
+function buildVisitStats(durationSeconds, usage, options = {}) {
   const safeDuration = Math.max(0, Number(durationSeconds || 0));
   const summaryInputTokens = Number(usage.inputTokens || 0);
   const summaryOutputTokens = Number(usage.outputTokens || 0);
   const audioMinutes = safeDuration / 60;
-  const transcribeCostUsd = audioMinutes * transcribeCostPerMinute();
+  const transcribeCostUsd = options.transcribeCostUsd !== undefined
+    ? Number(options.transcribeCostUsd || 0)
+    : transcriptionCostForSeconds(safeDuration);
   const summaryCostUsd =
     (summaryInputTokens / 1_000_000) * summaryInputCostPerMillion() +
     (summaryOutputTokens / 1_000_000) * summaryOutputCostPerMillion();
@@ -1301,6 +1482,10 @@ function buildVisitStats(durationSeconds, usage) {
     summaryCostUsd,
     estimatedCostUsd: transcribeCostUsd + summaryCostUsd
   };
+}
+
+function transcriptionCostForSeconds(seconds) {
+  return (Math.max(0, Number(seconds || 0)) / 60) * transcribeCostPerMinute();
 }
 
 function normalizeResponseUsage(usage = {}) {
@@ -1319,14 +1504,22 @@ function clientUsageStats(client) {
   return {
     monthlySeconds: Number(client.monthlySeconds || 0),
     totalSeconds: Number(client.totalSeconds || 0),
+    monthlyTranscriptionSeconds: Number(client.monthlyTranscriptionSeconds || 0),
+    totalTranscriptionSeconds: Number(client.totalTranscriptionSeconds || 0),
     monthlyMinutes: Number((Number(client.monthlySeconds || 0) / 60).toFixed(1)),
     totalMinutes: Number((Number(client.totalSeconds || 0) / 60).toFixed(1)),
+    monthlyTranscriptionMinutes: Number((Number(client.monthlyTranscriptionSeconds || 0) / 60).toFixed(1)),
+    totalTranscriptionMinutes: Number((Number(client.totalTranscriptionSeconds || 0) / 60).toFixed(1)),
     monthlySummaryInputTokens: monthlyInput,
     monthlySummaryOutputTokens: monthlyOutput,
     monthlySummaryTotalTokens: monthlyInput + monthlyOutput,
     totalSummaryInputTokens: totalInput,
     totalSummaryOutputTokens: totalOutput,
     totalSummaryTotalTokens: totalInput + totalOutput,
+    monthlyTranscriptionCostUsd: Number(client.monthlyTranscriptionCostUsd || 0),
+    totalTranscriptionCostUsd: Number(client.totalTranscriptionCostUsd || 0),
+    monthlyTextModelCostUsd: Number(client.monthlyTextModelCostUsd || 0),
+    totalTextModelCostUsd: Number(client.totalTextModelCostUsd || 0),
     monthlyEstimatedCostUsd: Number(client.monthlyEstimatedCostUsd || 0),
     totalEstimatedCostUsd: Number(client.totalEstimatedCostUsd || 0)
   };
@@ -1342,6 +1535,10 @@ function aggregateStats(clients) {
       stats.totalMinutes += usage.totalMinutes;
       stats.monthlyTokens += usage.monthlySummaryTotalTokens;
       stats.totalTokens += usage.totalSummaryTotalTokens;
+      stats.monthlyTranscriptionCostUsd += usage.monthlyTranscriptionCostUsd;
+      stats.totalTranscriptionCostUsd += usage.totalTranscriptionCostUsd;
+      stats.monthlyTextModelCostUsd += usage.monthlyTextModelCostUsd;
+      stats.totalTextModelCostUsd += usage.totalTextModelCostUsd;
       stats.monthlyEstimatedCostUsd += usage.monthlyEstimatedCostUsd;
       stats.totalEstimatedCostUsd += usage.totalEstimatedCostUsd;
       return stats;
@@ -1353,6 +1550,10 @@ function aggregateStats(clients) {
       totalMinutes: 0,
       monthlyTokens: 0,
       totalTokens: 0,
+      monthlyTranscriptionCostUsd: 0,
+      totalTranscriptionCostUsd: 0,
+      monthlyTextModelCostUsd: 0,
+      totalTextModelCostUsd: 0,
       monthlyEstimatedCostUsd: 0,
       totalEstimatedCostUsd: 0
     }
