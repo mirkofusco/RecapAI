@@ -14,11 +14,7 @@ const savedVisitsList = document.querySelector("#savedVisitsList");
 const startBtn = document.querySelector("#startBtn");
 const stopBtn = document.querySelector("#stopBtn");
 const resetBtn = document.querySelector("#resetBtn");
-const draftPanel = document.querySelector("#draftPanel");
-const draftInfo = document.querySelector("#draftInfo");
-const resumeDraftBtn = document.querySelector("#resumeDraftBtn");
-const finishDraftBtn = document.querySelector("#finishDraftBtn");
-const discardDraftBtn = document.querySelector("#discardDraftBtn");
+const downloadAudioBtn = document.querySelector("#downloadAudioBtn");
 const copySummaryBtn = document.querySelector("#copySummaryBtn");
 const printSummaryBtn = document.querySelector("#printSummaryBtn");
 const pdfSummaryBtn = document.querySelector("#pdfSummaryBtn");
@@ -59,15 +55,16 @@ let clientToken = localStorage.getItem("recapClientToken") || "";
 let currentClient = null;
 let currentSummaryTitle = "Riassunto visita";
 let currentDraft = null;
+let latestAudioBlob = null;
+let latestAudioUrl = "";
+let autoRecoveryDraftId = "";
 
 clientLoginForm.addEventListener("submit", loginClient);
 clientLogoutBtn.addEventListener("click", logoutClient);
 startBtn.addEventListener("click", startRecording);
 stopBtn.addEventListener("click", stopRecording);
 resetBtn.addEventListener("click", resetVisit);
-resumeDraftBtn.addEventListener("click", resumeDraft);
-finishDraftBtn.addEventListener("click", finishDraft);
-discardDraftBtn.addEventListener("click", discardDraft);
+downloadAudioBtn.addEventListener("click", downloadRecordedAudio);
 copySummaryBtn.addEventListener("click", () => copyText(summary.value, "Riassunto copiato."));
 printSummaryBtn.addEventListener("click", () => printDocument("Riassunto", summary.value));
 pdfSummaryBtn.addEventListener("click", () => downloadPdf("Riassunto", summary.value));
@@ -141,7 +138,7 @@ function updateClientLabels() {
   clientUsageLabel.textContent = `Visite mese: ${currentClient.usedThisMonth}/${currentClient.monthlyLimit}`;
   renderUsageDetails();
   renderSavedVisits();
-  renderDraftPanel();
+  void autoRecoverDraft();
 }
 
 async function startRecording() {
@@ -155,13 +152,10 @@ async function startRecording() {
     return;
   }
 
-  if (currentClient?.activeDraft?.transcript) {
-    const replaceDraft = window.confirm("C'e' una bozza salvata. Vuoi iniziare una nuova visita ed eliminare la bozza precedente?");
-    if (!replaceDraft) return;
-    await discardDraft(false);
-  }
+  if (currentClient?.activeDraft) await discardDraft(false);
 
   try {
+    clearAudioDownload();
     currentDraft = await startDraft();
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     chunks = [];
@@ -219,6 +213,7 @@ function stopRecording() {
   shouldProcessRecording = true;
   window.clearInterval(timer);
   recordingPanel.classList.add("hidden");
+  prepareAudioDownload();
   showProcessing("Sto trascrivendo la visita...", "Sto trasformando l'audio in testo.");
   setStatus("Sto chiudendo gli ultimi blocchi e preparo il riassunto.");
   recorder.stop();
@@ -226,6 +221,7 @@ function stopRecording() {
 
 async function processAudio() {
   try {
+    prepareAudioDownload();
     showProcessing("Sto completando la trascrizione...", "Attendo gli ultimi blocchi audio gia' inviati.");
     await chunkUploadChain;
 
@@ -288,7 +284,6 @@ async function uploadLiveChunk(blob, chunkIndex, sessionId) {
   if (currentClient?.activeDraft?.id === currentDraft?.id) {
     currentClient.activeDraft.transcript = transcript.value;
     currentClient.activeDraft.updatedAt = new Date().toISOString();
-    renderDraftPanel();
   }
   setTranscriptActionsEnabled(true);
   setStatus(`Trascrizione live aggiornata: blocco ${chunkIndex + 1}.`);
@@ -342,12 +337,11 @@ async function startDraft() {
   }
 
   currentClient.activeDraft = payload.draft;
-  renderDraftPanel();
   return payload.draft;
 }
 
 async function processFullAudio() {
-  const audioBlob = new Blob(chunks, { type: chunks[0]?.type || "audio/webm" });
+  const audioBlob = getRecordedAudioBlob();
   const fileName = `visita-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
   const form = new FormData();
   form.append("audio", audioBlob, fileName);
@@ -402,6 +396,7 @@ function resetVisit() {
   }
 
   chunks = [];
+  clearAudioDownload();
   recordingSessionId += 1;
   chunkUploadChain = Promise.resolve();
   liveTranscriptParts = [];
@@ -416,6 +411,7 @@ function resetVisit() {
   currentSummaryTitle = "Riassunto visita";
   startBtn.disabled = false;
   stopBtn.disabled = true;
+  downloadAudioBtn.disabled = true;
   recordingPanel.classList.add("hidden");
   hideProcessing();
   stopVoiceMeter();
@@ -429,22 +425,10 @@ function resetVisit() {
   setStatus("Pronto per iniziare.");
 }
 
-function renderDraftPanel() {
-  const draft = currentClient?.activeDraft || null;
-  if (!draft?.transcript) {
-    draftPanel.classList.add("hidden");
-    return;
-  }
-
-  const updatedAt = draft.updatedAt ? new Date(draft.updatedAt).toLocaleString("it-IT") : "ora";
-  const words = draft.transcript.trim().split(/\s+/).filter(Boolean).length;
-  draftInfo.textContent = `${words} parole salvate. Ultimo salvataggio: ${updatedAt}.`;
-  draftPanel.classList.remove("hidden");
-}
-
-function resumeDraft() {
+async function autoRecoverDraft() {
   const draft = currentClient?.activeDraft;
-  if (!draft) return;
+  if (!draft?.transcript || transcript.value || summary.value || autoRecoveryDraftId === draft.id) return;
+  autoRecoveryDraftId = draft.id;
   currentDraft = draft;
   patientName.value = draft.patientName || "";
   visitType.value = draft.visitType || visitType.value;
@@ -453,21 +437,14 @@ function resumeDraft() {
   summary.value = "";
   setTranscriptActionsEnabled(Boolean(transcript.value));
   setSummaryActionsEnabled(false);
-  setStatus("Bozza recuperata. Puoi copiarla, salvarla o generare il riassunto.");
-}
+  setStatus("Recupero automatico della visita in corso.");
 
-async function finishDraft() {
-  const draft = currentClient?.activeDraft;
-  if (!draft?.transcript) return;
   try {
-    startBtn.disabled = true;
-    stopBtn.disabled = true;
-    showProcessing("Sto preparando il riassunto per te...", "Uso la bozza salvata sul server.");
+    showProcessing("Sto recuperando la visita...", "Ho trovato una trascrizione salvata automaticamente e preparo il riassunto.");
     await summarizeLiveTranscript(draft.transcript, draft.id);
   } catch (error) {
-    setStatus(error.message);
+    setStatus(`Trascrizione recuperata. ${error.message}`);
   } finally {
-    startBtn.disabled = false;
     hideProcessing();
   }
 }
@@ -488,9 +465,43 @@ async function discardDraft(showMessage = true) {
   if (response.ok) {
     currentClient.activeDraft = null;
     currentDraft = null;
-    renderDraftPanel();
     if (showMessage) setStatus("Bozza eliminata.");
   }
+}
+
+function prepareAudioDownload() {
+  if (!chunks.length) return;
+  latestAudioBlob = getRecordedAudioBlob();
+  if (latestAudioUrl) URL.revokeObjectURL(latestAudioUrl);
+  latestAudioUrl = URL.createObjectURL(latestAudioBlob);
+  downloadAudioBtn.disabled = false;
+}
+
+function getRecordedAudioBlob() {
+  return latestAudioBlob || new Blob(chunks, { type: chunks[0]?.type || "audio/webm" });
+}
+
+function downloadRecordedAudio() {
+  if (!latestAudioBlob) prepareAudioDownload();
+  if (!latestAudioUrl) {
+    setStatus("Nessun audio disponibile da scaricare.");
+    return;
+  }
+
+  const link = document.createElement("a");
+  link.href = latestAudioUrl;
+  link.download = `recap-audio-${new Date().toISOString().replace(/[:.]/g, "-")}.webm`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setStatus("Audio scaricato. Il file resta solo sul dispositivo.");
+}
+
+function clearAudioDownload() {
+  latestAudioBlob = null;
+  if (latestAudioUrl) URL.revokeObjectURL(latestAudioUrl);
+  latestAudioUrl = "";
+  downloadAudioBtn.disabled = true;
 }
 
 async function copyText(value, message) {
