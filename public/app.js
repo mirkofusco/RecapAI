@@ -40,6 +40,8 @@ const processingHint = document.querySelector("#processingHint");
 const summary = document.querySelector("#summary");
 const transcript = document.querySelector("#transcript");
 const LIVE_CHUNK_MS = 45000;
+const LIVE_TRANSCRIPTION_ENABLED = false;
+const RECORDING_AUDIO_BITS_PER_SECOND = 128000;
 const CHUNK_RETRY_DELAYS = [900, 2200, 4200];
 
 let recorder;
@@ -186,12 +188,15 @@ async function startRecording() {
     setSummaryActionsEnabled(false);
     shouldProcessRecording = true;
     const mimeType = preferredMimeType();
-    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    recorder = new MediaRecorder(stream, {
+      ...(mimeType ? { mimeType } : {}),
+      audioBitsPerSecond: RECORDING_AUDIO_BITS_PER_SECOND
+    });
 
     recorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) {
         chunks.push(event.data);
-        if (shouldProcessRecording) {
+        if (LIVE_TRANSCRIPTION_ENABLED && shouldProcessRecording) {
           const now = Date.now();
           const chunkDurationSeconds = Math.max(1, Math.round((now - lastChunkStartedAt) / 1000));
           lastChunkStartedAt = now;
@@ -243,14 +248,14 @@ function stopRecording() {
 async function processAudio() {
   try {
     prepareAudioDownload();
-    showProcessing("Sto completando la trascrizione...", "Attendo gli ultimi blocchi audio gia' inviati.");
-    await chunkUploadChain;
+    showProcessing("Sto trascrivendo la visita completa...", "Uso l'audio intero per massima precisione.");
+    if (LIVE_TRANSCRIPTION_ENABLED) await chunkUploadChain;
 
     const liveTranscript = liveTranscriptParts.filter(Boolean).join("\n\n").trim();
     try {
       await processFullAudio(currentDraft?.id || "");
     } catch (fullAudioError) {
-      if (liveTranscript) {
+      if (LIVE_TRANSCRIPTION_ENABLED && liveTranscript) {
         setStatus("Trascrizione completa non riuscita. Uso la bozza live recuperata.");
         await summarizeLiveTranscript(liveTranscript, currentDraft?.id || "");
         return;

@@ -14,8 +14,8 @@ const HOST = process.env.HOST || "0.0.0.0";
 const PUBLIC_DIR = join(process.cwd(), "public");
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "recap-admin";
-const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-4o-transcribe-diarize";
-const FALLBACK_TRANSCRIBE_MODEL = process.env.FALLBACK_TRANSCRIBE_MODEL || "gpt-4o-transcribe";
+const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || "gpt-4o-transcribe";
+const FALLBACK_TRANSCRIBE_MODEL = process.env.FALLBACK_TRANSCRIBE_MODEL || "gpt-4o-transcribe-diarize";
 const SUMMARY_MODEL = process.env.SUMMARY_MODEL || "gpt-5.4-nano";
 const TRANSCRIBE_PROMPT = process.env.TRANSCRIBE_PROMPT || [
   "Trascrivi in italiano in modo fedele una visita o consulenza professionale.",
@@ -201,7 +201,7 @@ async function handleRecap(req, res) {
   let transcript;
   let summaryResult;
   try {
-    transcript = await transcribeAudio(audio, requestId);
+    transcript = await transcribeAudio(audio, requestId, buildTranscriptionContext(patientName, visitType, visitContext));
     summaryResult = await summarizeVisit(transcript, visitType, visitContext, client.summaryPrompt, requestId);
   } catch (error) {
     logEvent("recap_failed", {
@@ -729,7 +729,7 @@ async function handleClient(req, res) {
   sendJson(res, 404, { error: "Endpoint cliente non trovato." });
 }
 
-async function transcribeAudio(audioFile, requestId) {
+async function transcribeAudio(audioFile, requestId, context = "") {
   const attempts = [
     { model: TRANSCRIBE_MODEL, withPrompt: true },
     { model: TRANSCRIBE_MODEL, withPrompt: false },
@@ -742,7 +742,7 @@ async function transcribeAudio(audioFile, requestId) {
   let lastError;
   for (const attempt of attempts) {
     try {
-      return await transcribeAudioWithModel(audioFile, requestId, attempt.model, attempt.withPrompt);
+      return await transcribeAudioWithModel(audioFile, requestId, attempt.model, attempt.withPrompt, context);
     } catch (error) {
       lastError = error;
       logEvent("transcription_attempt_failed", {
@@ -757,7 +757,7 @@ async function transcribeAudio(audioFile, requestId) {
   throw lastError || new Error("Trascrizione non riuscita.");
 }
 
-async function transcribeAudioWithModel(audioFile, requestId, model, withPrompt) {
+async function transcribeAudioWithModel(audioFile, requestId, model, withPrompt, context = "") {
   logEvent("transcription_started", {
     requestId,
     model,
@@ -768,7 +768,7 @@ async function transcribeAudioWithModel(audioFile, requestId, model, withPrompt)
   data.append("model", model);
   data.append("language", "it");
   data.append("response_format", "json");
-  if (withPrompt) data.append("prompt", TRANSCRIBE_PROMPT);
+  if (withPrompt) data.append("prompt", buildTranscriptionPrompt(context));
   data.append("file", audioFile, audioFile.name || "visita.webm");
 
   const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
@@ -964,6 +964,27 @@ ${transcript}
 function cleanOptionalText(value) {
   const text = String(value || "").trim();
   return text || "Non inserito.";
+}
+
+function buildTranscriptionContext(patientName, visitType, visitContext) {
+  const parts = [
+    `Tipo colloquio: ${String(visitType || "visita professionale").trim()}`,
+    patientName ? `Nome paziente/cliente: ${String(patientName).trim()}` : "",
+    visitContext ? `Contesto e parole attese: ${String(visitContext).trim()}` : ""
+  ].filter(Boolean);
+
+  return parts.join("\n");
+}
+
+function buildTranscriptionPrompt(context = "") {
+  const cleanContext = String(context || "").trim();
+  return [
+    TRANSCRIBE_PROMPT,
+    "Contesto utile per riconoscere termini tecnici, nomi propri e misure:",
+    cleanContext || "Nessun contesto aggiuntivo.",
+    "Presta particolare attenzione a numeri, unita' di misura, alimenti, farmaci, patologie, esami, date e nomi propri.",
+    "Trascrivi solo cio' che senti: se una parola e' poco chiara scegli la forma piu' probabile senza aggiungere spiegazioni."
+  ].join("\n");
 }
 
 function defaultSummaryPrompt() {
