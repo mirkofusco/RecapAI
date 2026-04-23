@@ -252,15 +252,29 @@ async function processAudio() {
     if (LIVE_TRANSCRIPTION_ENABLED) await chunkUploadChain;
 
     const liveTranscript = liveTranscriptParts.filter(Boolean).join("\n\n").trim();
-    try {
-      await processFullAudio(currentDraft?.id || "");
-    } catch (fullAudioError) {
+    let lastFullAudioError = null;
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        if (attempt > 1) {
+          setStatus(`Riprovo la trascrizione (${attempt}/2)...`);
+          await wait(1200);
+        }
+        await processFullAudio(currentDraft?.id || "");
+        lastFullAudioError = null;
+        break;
+      } catch (fullAudioError) {
+        lastFullAudioError = fullAudioError;
+        if (!shouldRetryTranscriptionError(fullAudioError) || attempt >= 2) break;
+      }
+    }
+
+    if (lastFullAudioError) {
       if (LIVE_TRANSCRIPTION_ENABLED && liveTranscript) {
         setStatus("Trascrizione completa non riuscita. Uso la bozza live recuperata.");
         await summarizeLiveTranscript(liveTranscript, currentDraft?.id || "");
         return;
       }
-      throw fullAudioError;
+      throw lastFullAudioError;
     }
   } catch (error) {
     setStatus(humanError(error));
@@ -519,6 +533,9 @@ async function readApiPayload(response) {
 
 function humanError(error) {
   const message = String(error?.message || "");
+  if (/codice assistenza/i.test(message)) {
+    return message;
+  }
   if (/sessione|unauthorized|401/i.test(message)) {
     return "Sessione scaduta. Accedi di nuovo e riprova.";
   }
@@ -535,6 +552,11 @@ function humanError(error) {
     return "La trascrizione e' pronta, ma il riassunto non e' riuscito. Riprova tra poco.";
   }
   return "Qualcosa non e' andato. Ho mantenuto quello che era gia' stato salvato.";
+}
+
+function shouldRetryTranscriptionError(error) {
+  const message = String(error?.message || "").toLowerCase();
+  return /trascrizione non riuscita|timeout|servizio ai|openai|502|503|504|temporane/.test(message);
 }
 
 async function discardDraft(showMessage = true) {
