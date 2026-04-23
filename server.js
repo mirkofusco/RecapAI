@@ -36,6 +36,8 @@ const MAX_SAVED_VISITS = 10;
 const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES || 80 * 1024 * 1024);
 const MAX_JSON_BYTES = Number(process.env.MAX_JSON_BYTES || 2 * 1024 * 1024);
 const MAX_TRANSCRIPTION_CONTEXT_CHARS = Number(process.env.MAX_TRANSCRIPTION_CONTEXT_CHARS || 1200);
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 70000);
+const OPENAI_RETRIES = Number(process.env.OPENAI_RETRIES || 1);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const rateBuckets = new Map();
 
@@ -808,13 +810,13 @@ async function transcribeAudioWithModel(audioFile, requestId, model, withPrompt,
   if (withPrompt) data.append("prompt", buildTranscriptionPrompt(context));
   data.append("file", audioFile, audioFile.name || "visita.webm");
 
-  const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+  const response = await fetchOpenAiWithRetry("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`
     },
     body: data
-  });
+  }, requestId, "transcription_transport_failed");
 
   const payload = await readOpenAiPayload(response);
 
@@ -848,6 +850,38 @@ async function readOpenAiPayload(response) {
       }
     };
   }
+}
+
+async function fetchWithTimeout(url, options, timeoutMs = OPENAI_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Timeout servizio AI.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchOpenAiWithRetry(url, options, requestId, eventName) {
+  let lastError;
+  for (let attempt = 0; attempt <= OPENAI_RETRIES; attempt += 1) {
+    try {
+      return await fetchWithTimeout(url, options, OPENAI_TIMEOUT_MS);
+    } catch (error) {
+      lastError = error;
+      logEvent(eventName, {
+        requestId,
+        attempt: attempt + 1,
+        message: error.message
+      });
+    }
+  }
+  throw lastError || new Error("Servizio AI non raggiungibile.");
 }
 
 async function summarizeVisit(transcript, visitType, visitContext, summaryPrompt, requestId) {
@@ -922,7 +956,7 @@ Trascrizione completa:
 ${transcript}
 `;
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetchOpenAiWithRetry("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -933,9 +967,9 @@ ${transcript}
       input: prompt,
       temperature: 0.2
     })
-  });
+  }, requestId, "summary_transport_failed");
 
-  const payload = await response.json();
+  const payload = await readOpenAiPayload(response);
 
   if (!response.ok) {
     logEvent("summary_failed", {
@@ -989,7 +1023,7 @@ Trascrizione originale:
 ${transcript}
 `;
 
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetchOpenAiWithRetry("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -1000,9 +1034,9 @@ ${transcript}
       input: prompt,
       temperature: 0.1
     })
-  });
+  }, requestId, "rework_transport_failed");
 
-  const payload = await response.json();
+  const payload = await readOpenAiPayload(response);
   if (!response.ok) {
     throw new Error(payload.error?.message || "Rielaborazione non riuscita.");
   }

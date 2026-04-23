@@ -98,7 +98,7 @@ async function loginClient(event) {
     })
   });
 
-  const payload = await response.json();
+  const payload = await readApiPayload(response);
 
   if (!response.ok) {
     loginStatus.textContent = payload.error || "Accesso non riuscito.";
@@ -121,7 +121,7 @@ async function restoreSession() {
     return;
   }
 
-  const payload = await response.json();
+  const payload = await readApiPayload(response);
   currentClient = payload.client;
   showApp();
 }
@@ -318,7 +318,7 @@ async function uploadLiveChunk(blob, chunkIndex, sessionId, chunkDurationSeconds
     body: form
   });
 
-  const payload = await response.json();
+  const payload = await readApiPayload(response);
   if (!response.ok) {
     throw new Error(payload.error || "Blocco audio non trascritto.");
   }
@@ -356,7 +356,7 @@ async function summarizeLiveTranscript(liveTranscript, draftId = "") {
     })
   });
 
-  const payload = await response.json();
+  const payload = await readApiPayload(response);
   if (!response.ok) {
     throw new Error(payload.error || "Riassunto non riuscito.");
   }
@@ -505,6 +505,16 @@ async function autoRecoverDraft() {
 
 function wait(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function readApiPayload(response) {
+  const raw = await response.text();
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { error: raw.slice(0, 280) || `Errore HTTP ${response.status}` };
+  }
 }
 
 function humanError(error) {
@@ -763,7 +773,7 @@ async function reworkTranscriptText() {
         transcript: transcript.value
       })
     });
-    const payload = await response.json();
+    const payload = await readApiPayload(response);
     if (!response.ok) {
       throw new Error(payload.error || "Rielaborazione non riuscita.");
     }
