@@ -269,6 +269,8 @@ async function processAudio() {
     }
 
     if (lastFullAudioError) {
+      const recoveredWithChunks = await recoverWithChunkTranscription(currentDraft?.id || "");
+      if (recoveredWithChunks) return;
       if (LIVE_TRANSCRIPTION_ENABLED && liveTranscript) {
         setStatus("Trascrizione completa non riuscita. Uso la bozza live recuperata.");
         await summarizeLiveTranscript(liveTranscript, currentDraft?.id || "");
@@ -286,6 +288,43 @@ async function processAudio() {
     visitContext.disabled = false;
     shouldProcessRecording = false;
     hideProcessing();
+  }
+}
+
+async function recoverWithChunkTranscription(draftId = "") {
+  if (!chunks.length) return false;
+
+  try {
+    showProcessing(
+      "Recupero trascrizione in corso...",
+      "La trascrizione completa non e' riuscita. Provo automaticamente blocco per blocco."
+    );
+
+    liveTranscriptParts = [];
+    const totalDurationSeconds = Math.max(1, Math.floor((Date.now() - startedAt) / 1000));
+    const totalBytes = chunks.reduce((sum, blob) => sum + Number(blob.size || 0), 0) || 1;
+    let assignedSeconds = 0;
+
+    for (let index = 0; index < chunks.length; index += 1) {
+      const blob = chunks[index];
+      const share = Math.max(1, Math.round((totalDurationSeconds * Number(blob.size || 0)) / totalBytes));
+      const remainingSeconds = Math.max(1, totalDurationSeconds - assignedSeconds);
+      const chunkDurationSeconds = index === chunks.length - 1 ? remainingSeconds : Math.min(share, remainingSeconds);
+      assignedSeconds += chunkDurationSeconds;
+
+      setStatus(`Recupero trascrizione ${index + 1}/${chunks.length}...`);
+      await uploadLiveChunkWithRetry(blob, index, recordingSessionId, chunkDurationSeconds);
+    }
+
+    const recoveredTranscript = liveTranscriptParts.filter(Boolean).join("\n\n").trim();
+    if (!recoveredTranscript) return false;
+
+    await summarizeLiveTranscript(recoveredTranscript, draftId);
+    setStatus("Trascrizione recuperata automaticamente.");
+    return true;
+  } catch (error) {
+    console.warn("Recupero a blocchi non riuscito.", error);
+    return false;
   }
 }
 
