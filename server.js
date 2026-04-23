@@ -36,8 +36,8 @@ const MAX_SAVED_VISITS = 10;
 const MAX_AUDIO_BYTES = Number(process.env.MAX_AUDIO_BYTES || 80 * 1024 * 1024);
 const MAX_JSON_BYTES = Number(process.env.MAX_JSON_BYTES || 2 * 1024 * 1024);
 const MAX_TRANSCRIPTION_CONTEXT_CHARS = Number(process.env.MAX_TRANSCRIPTION_CONTEXT_CHARS || 1200);
-const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 70000);
-const OPENAI_RETRIES = Number(process.env.OPENAI_RETRIES || 1);
+const OPENAI_TIMEOUT_MS = Number(process.env.OPENAI_TIMEOUT_MS || 22000);
+const OPENAI_RETRIES = Number(process.env.OPENAI_RETRIES || 0);
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_MS || 12 * 60 * 60 * 1000);
 const rateBuckets = new Map();
 
@@ -771,9 +771,8 @@ async function handleClient(req, res) {
 async function transcribeAudio(audioFile, requestId, context = "") {
   const attempts = [
     { model: TRANSCRIBE_MODEL, withPrompt: true },
-    { model: TRANSCRIBE_MODEL, withPrompt: false },
     { model: FALLBACK_TRANSCRIBE_MODEL, withPrompt: true },
-    { model: FALLBACK_TRANSCRIBE_MODEL, withPrompt: false }
+    { model: TRANSCRIBE_MODEL, withPrompt: false }
   ].filter((attempt, index, list) => {
     return list.findIndex((item) => item.model === attempt.model && item.withPrompt === attempt.withPrompt) === index;
   });

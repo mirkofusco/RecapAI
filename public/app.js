@@ -252,23 +252,14 @@ async function processAudio() {
     if (LIVE_TRANSCRIPTION_ENABLED) await chunkUploadChain;
 
     const liveTranscript = liveTranscriptParts.filter(Boolean).join("\n\n").trim();
-    let lastFullAudioError = null;
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      try {
-        if (attempt > 1) {
-          setStatus(`Riprovo la trascrizione (${attempt}/2)...`);
-          await wait(1200);
-        }
-        await processFullAudio(currentDraft?.id || "");
-        lastFullAudioError = null;
-        break;
-      } catch (fullAudioError) {
-        lastFullAudioError = fullAudioError;
-        if (!shouldRetryTranscriptionError(fullAudioError) || attempt >= 2) break;
-      }
+    let fullAudioError = null;
+    try {
+      await processFullAudio(currentDraft?.id || "");
+    } catch (error) {
+      fullAudioError = error;
     }
 
-    if (lastFullAudioError) {
+    if (fullAudioError) {
       const recoveredWithChunks = await recoverWithChunkTranscription(currentDraft?.id || "");
       if (recoveredWithChunks) return;
       if (LIVE_TRANSCRIPTION_ENABLED && liveTranscript) {
@@ -276,7 +267,7 @@ async function processAudio() {
         await summarizeLiveTranscript(liveTranscript, currentDraft?.id || "");
         return;
       }
-      throw lastFullAudioError;
+      throw fullAudioError;
     }
   } catch (error) {
     setStatus(humanError(error));
@@ -591,11 +582,6 @@ function humanError(error) {
     return "La trascrizione e' pronta, ma il riassunto non e' riuscito. Riprova tra poco.";
   }
   return "Qualcosa non e' andato. Ho mantenuto quello che era gia' stato salvato.";
-}
-
-function shouldRetryTranscriptionError(error) {
-  const message = String(error?.message || "").toLowerCase();
-  return /trascrizione non riuscita|timeout|servizio ai|openai|502|503|504|temporane/.test(message);
 }
 
 async function discardDraft(showMessage = true) {
